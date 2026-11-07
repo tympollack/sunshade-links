@@ -1,0 +1,13 @@
+name: sunshade_links_dart
+description: Pure Dart client and universal deep link parser for SunShade linking ecosystem.
+version: 1.0.0
+homepage: https://github.com/tympollack/sunshade-links
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  http: ^1.2.0
+
+dev_dependencies:
+  test: ^1.24.0
