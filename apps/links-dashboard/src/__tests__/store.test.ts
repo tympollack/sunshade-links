@@ -7,11 +7,12 @@ import {
   getDefaultChannelsForSlug,
   getServerStableCampaigns,
   saveChannelsForSlug,
+  resetStore,
 } from "../lib/store";
 
 describe("Links Store", () => {
   beforeEach(() => {
-    deleteChannelForSlug("launch", "test-ch");
+    resetStore();
   });
 
   afterEach(() => {
@@ -25,6 +26,40 @@ describe("Links Store", () => {
     expect(channels.length).toBeGreaterThanOrEqual(4);
     expect(channels.some((c) => c.channel === "direct")).toBe(true);
     expect(channels.some((c) => c.channel === "bsky")).toBe(true);
+  });
+
+  it("loads persisted launch channels from storage instead of seeded defaults on fresh load", () => {
+    const customLaunchChannels = [
+      ...getDefaultChannelsForSlug("launch"),
+      {
+        id: "ch-launch-persisted",
+        slug: "launch",
+        channel: "mastodon",
+        destination: "https://sunshade.icu/launch?utm_source=mastodon",
+        clicks: 50,
+        telemetryCounts: [10, 20, 20],
+        trustScore: 99,
+      },
+    ];
+
+    const mockStorage = {
+      getItem: vi.fn((key: string) => {
+        if (key === "sunshade_links_launch") {
+          return JSON.stringify(customLaunchChannels);
+        }
+        return null;
+      }),
+      setItem: vi.fn(),
+      length: 1,
+      key: vi.fn((i: number) => (i === 0 ? "sunshade_links_launch" : null)),
+      clear: vi.fn(),
+      removeItem: vi.fn(),
+    };
+    (globalThis as Record<string, unknown>).window = { localStorage: mockStorage };
+
+    const loaded = getChannelsForSlug("launch");
+    expect(loaded.length).toBe(customLaunchChannels.length);
+    expect(loaded.some((c) => c.channel === "mastodon")).toBe(true);
   });
 
   it("provides server-stable campaign snapshot for initial SSR/CSR parity", () => {

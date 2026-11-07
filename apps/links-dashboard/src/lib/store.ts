@@ -49,8 +49,13 @@ export const LAUNCH_DEFAULT_CHANNELS: ChannelData[] = [
 ];
 
 // Use Map to avoid prototype inheritance collisions (e.g. constructor, toString)
+// Keep memoryStore unseeded at startup so persisted channels (including for 'launch')
+// are loaded from persistent storage before falling back to defaults.
 const memoryStore = new Map<string, ChannelData[]>();
-memoryStore.set("launch", [...LAUNCH_DEFAULT_CHANNELS]);
+
+export function resetStore(): void {
+  memoryStore.clear();
+}
 
 const STORAGE_PREFIX = "sunshade_links_";
 
