@@ -77,10 +77,26 @@ class SunshadeDeepLinkParser {
   };
 
   /// Parses an incoming universal link string or [Uri].
+  ///
+  /// Enforces:
+  /// - Trusted schemes only (`https` or `http`)
+  /// - Verified SunShade linking hostnames (non-empty)
+  /// - Strict path segment validation:
+  ///   * `/pw/:nodeId`: exactly 2 segments
+  ///   * `/app/:route*`: 2 or more segments
+  ///   * `/:slug` or `/:slug/:channel`: 1 or 2 segments
   static SunshadeDeepLink parse(dynamic input) {
     final Uri uri = input is Uri ? input : Uri.parse(input.toString());
 
-    if (!validHosts.contains(uri.host.toLowerCase()) && uri.host.isNotEmpty) {
+    // Enforce trusted schemes (reject ftp, file, javascript, custom schemas)
+    final scheme = uri.scheme.toLowerCase();
+    if (scheme != 'https' && scheme != 'http') {
+      return UnrecognizedDeepLink(rawUri: uri);
+    }
+
+    // Require non-empty valid host
+    final host = uri.host.toLowerCase();
+    if (host.isEmpty || !validHosts.contains(host)) {
       return UnrecognizedDeepLink(rawUri: uri);
     }
 
@@ -91,15 +107,15 @@ class SunshadeDeepLinkParser {
 
     final prefix = segments[0].toLowerCase();
 
-    // Pattern 1: links.sunshade.icu/pw/:nodeId
+    // Pattern 1: links.sunshade.icu/pw/:nodeId (strictly exactly 2 segments)
     if (prefix == 'pw') {
-      if (segments.length >= 2) {
+      if (segments.length == 2) {
         return PatchworkNodeDeepLink(nodeId: segments[1]);
       }
       return UnrecognizedDeepLink(rawUri: uri);
     }
 
-    // Pattern 2: links.sunshade.icu/app/:route*
+    // Pattern 2: links.sunshade.icu/app/:route* (2 or more segments)
     if (prefix == 'app') {
       if (segments.length >= 2) {
         final remainingRoute = segments.sublist(1).join('/');
@@ -108,9 +124,14 @@ class SunshadeDeepLinkParser {
       return UnrecognizedDeepLink(rawUri: uri);
     }
 
-    // Pattern 3: links.sunshade.icu/:slug[/:channel]
-    final slug = segments[0];
-    final channel = segments.length > 1 ? segments[1] : null;
-    return GenericShortLink(slug: slug, channel: channel);
+    // Pattern 3: links.sunshade.icu/:slug or links.sunshade.icu/:slug/:channel (strictly 1 or 2 segments)
+    if (segments.length == 1) {
+      return GenericShortLink(slug: segments[0]);
+    } else if (segments.length == 2) {
+      return GenericShortLink(slug: segments[0], channel: segments[1]);
+    } else {
+      // 3 or more segments on a generic link is malformed
+      return UnrecognizedDeepLink(rawUri: uri);
+    }
   }
 }

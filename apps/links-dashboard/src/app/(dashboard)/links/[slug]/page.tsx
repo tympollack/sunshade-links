@@ -1,13 +1,14 @@
 "use client";
 
 import React, { useState } from "react";
+import Link from "next/link";
 import { ChannelRow, ChannelData, formatVanityUrl } from "@/components/links/ChannelRow";
 
 interface PageProps {
   params: Promise<{ slug: string }>;
 }
 
-const DEFAULT_CHANNELS: ChannelData[] = [
+const LAUNCH_DEFAULT_CHANNELS: ChannelData[] = [
   {
     id: "ch-1",
     slug: "launch",
@@ -46,15 +47,38 @@ const DEFAULT_CHANNELS: ChannelData[] = [
   },
 ];
 
+function getInitialChannels(slug: string): ChannelData[] {
+  if (slug === "launch") {
+    return LAUNCH_DEFAULT_CHANNELS;
+  }
+  // For non-launch slugs, generate slug-specific default channel
+  return [
+    {
+      id: `${slug}-direct`,
+      slug,
+      channel: "direct",
+      destination: `https://sunshade.icu/${slug}`,
+      clicks: 0,
+      telemetryCounts: [0, 0, 0, 0],
+      trustScore: 100,
+    },
+  ];
+}
+
 export default function LinkChannelsPage({ params }: PageProps) {
   const unwrappedParams = React.use(params);
   const slug = unwrappedParams.slug || "link";
 
-  const [channels, setChannels] = useState<ChannelData[]>(
-    DEFAULT_CHANNELS.map((c) => ({ ...c, slug }))
+  const [channels, setChannels] = useState<ChannelData[]>(() =>
+    getInitialChannels(slug)
   );
   const [selectedChannel, setSelectedChannel] = useState<ChannelData | null>(null);
   const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+
+  // New channel form state
+  const [newChannelName, setNewChannelName] = useState("");
+  const [newDestination, setNewDestination] = useState("");
 
   const handleDelete = (id: string) => {
     setChannels((prev) => prev.filter((c) => c.id !== id));
@@ -65,18 +89,43 @@ export default function LinkChannelsPage({ params }: PageProps) {
     setQrModalOpen(true);
   };
 
+  const handleOpenCreateModal = () => {
+    setNewChannelName("");
+    setNewDestination(`https://sunshade.icu/${slug}`);
+    setCreateModalOpen(true);
+  };
+
+  const handleCreateChannel = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanChannel = newChannelName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+    if (!cleanChannel) return;
+
+    const newChannelItem: ChannelData = {
+      id: `ch-${Date.now()}`,
+      slug,
+      channel: cleanChannel,
+      destination: newDestination.trim() || `https://sunshade.icu/${slug}`,
+      clicks: 0,
+      telemetryCounts: [0, 0, 0, 0],
+      trustScore: 100,
+    };
+
+    setChannels((prev) => [...prev, newChannelItem]);
+    setCreateModalOpen(false);
+  };
+
   return (
     <div className="flex flex-col min-h-[100dvh] bg-slate-950 text-slate-100 pb-[env(safe-area-inset-bottom,24px)]">
       {/* Top Header */}
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/80 backdrop-blur px-4 py-3.5 sm:px-6">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <a
+            <Link
               href="/links"
               className="text-xs font-mono text-slate-400 hover:text-slate-200 transition"
             >
               ← All Links
-            </a>
+            </Link>
             <span className="text-slate-600">/</span>
             <h1 className="text-sm font-mono font-semibold text-amber-400">
               links.sunshade.icu/{slug}
@@ -112,7 +161,14 @@ export default function LinkChannelsPage({ params }: PageProps) {
 
           {channels.length === 0 && (
             <div className="p-8 text-center border border-dashed border-slate-800 rounded-lg text-slate-500 text-sm">
-              No channels created yet for this slug.
+              <p>No channels created yet for this slug.</p>
+              <button
+                type="button"
+                onClick={handleOpenCreateModal}
+                className="mt-3 px-3 py-1.5 text-xs font-mono text-amber-400 hover:text-amber-300 underline"
+              >
+                + Add your first channel
+              </button>
             </div>
           )}
         </div>
@@ -126,12 +182,87 @@ export default function LinkChannelsPage({ params }: PageProps) {
           </div>
           <button
             type="button"
+            onClick={handleOpenCreateModal}
             className="w-full sm:w-auto px-4 py-2 text-xs font-medium rounded-md bg-amber-500 text-slate-950 hover:bg-amber-400 font-mono transition"
           >
             + Create New Channel
           </button>
         </div>
       </div>
+
+      {/* Create Channel Modal */}
+      {createModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+          onClick={() => setCreateModalOpen(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-md w-full space-y-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center">
+              <h3 className="font-semibold text-sm text-slate-100 font-mono">
+                Create New Channel for /{slug}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setCreateModalOpen(false)}
+                className="text-slate-400 hover:text-slate-200 text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateChannel} className="space-y-4">
+              <div>
+                <label className="block text-xs font-mono text-slate-300 mb-1">
+                  Channel Identifier (e.g. bsky, linkedin, substack, qr)
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newChannelName}
+                  onChange={(e) => setNewChannelName(e.target.value)}
+                  placeholder="e.g. bsky"
+                  className="w-full px-3 py-2 text-xs font-mono rounded bg-slate-950 border border-slate-800 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-mono text-slate-300 mb-1">
+                  Destination URL
+                </label>
+                <input
+                  type="url"
+                  required
+                  value={newDestination}
+                  onChange={(e) => setNewDestination(e.target.value)}
+                  placeholder="https://sunshade.icu/..."
+                  className="w-full px-3 py-2 text-xs font-mono rounded bg-slate-950 border border-slate-800 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div className="flex gap-2 justify-end pt-2">
+                <button
+                  type="button"
+                  onClick={() => setCreateModalOpen(false)}
+                  className="px-3 py-1.5 text-xs rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-3 py-1.5 text-xs font-medium rounded bg-amber-500 text-slate-950 hover:bg-amber-400 font-mono transition"
+                >
+                  Add Channel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* QR Modal */}
       {qrModalOpen && selectedChannel && (
@@ -159,7 +290,6 @@ export default function LinkChannelsPage({ params }: PageProps) {
             </div>
 
             <div className="p-4 bg-white rounded-lg flex items-center justify-center">
-              {/* Fallback QR representation */}
               <div className="w-48 h-48 border-2 border-slate-900 flex flex-col items-center justify-center text-slate-900 text-xs font-mono text-center p-2">
                 <span className="font-bold">SUNSHADE LINK</span>
                 <span className="text-[10px] break-all mt-2">

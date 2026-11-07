@@ -14,6 +14,7 @@ export interface SparklineTelemetry {
 
 export interface InlineSparklineProps {
   data: number[] | SparklineTelemetry;
+  totalCount?: number;
   width?: number;
   height?: number;
   className?: string;
@@ -83,6 +84,7 @@ export function generateSvgPath(
 
 export function InlineSparkline({
   data,
+  totalCount,
   width = 64,
   height = 18,
   className = "",
@@ -113,7 +115,7 @@ export function InlineSparkline({
   }[trend];
 
   const gradientId = React.useId();
-  const total = counts.reduce((sum, n) => sum + n, 0);
+  const sampledTotal = counts.reduce((sum, n) => sum + n, 0);
 
   return (
     <div
@@ -170,7 +172,12 @@ export function InlineSparkline({
               )}
             </div>
           ) : (
-            <span>Total: {total} clicks ({trend})</span>
+            <span>
+              {totalCount !== undefined
+                ? `Total: ${totalCount}`
+                : `Sampled: ${sampledTotal}`}{" "}
+              clicks ({trend})
+            </span>
           )}
         </div>
       )}

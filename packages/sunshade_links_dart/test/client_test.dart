@@ -100,5 +100,45 @@ void main() {
       final score = await client.checkTrustScore('https://unreachable.org');
       expect(score, equals(50));
     });
+
+    test('does not close injected http client when close() is called', () async {
+      var clientWasClosed = false;
+      final mockClient = MockClient((request) async {
+        return http.Response('{}', 200);
+      });
+
+      // Wrap in custom client to monitor close
+      final trackingClient = _TrackingClient(mockClient, () {
+        clientWasClosed = true;
+      });
+
+      final client = SunshadeLinksClient(httpClient: trackingClient);
+      client.close();
+
+      expect(clientWasClosed, isFalse);
+    });
+
+    test('closes internally created http client when close() is called', () {
+      final client = SunshadeLinksClient();
+      expect(() => client.close(), returnsNormally);
+    });
   });
+}
+
+class _TrackingClient extends http.BaseClient {
+  final http.Client _inner;
+  final void Function() _onClose;
+
+  _TrackingClient(this._inner, this._onClose);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    return _inner.send(request);
+  }
+
+  @override
+  void close() {
+    _onClose();
+    _inner.close();
+  }
 }

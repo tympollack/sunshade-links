@@ -94,9 +94,14 @@ export function ChannelRow({
       </div>
 
       <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0">
-        {/* Micro sparkline */}
+        {/* Micro sparkline with authoritative total clicks */}
         <div className="flex items-center gap-2">
-          <InlineSparkline data={data.telemetryCounts} width={64} height={18} />
+          <InlineSparkline
+            data={data.telemetryCounts}
+            totalCount={data.clicks}
+            width={64}
+            height={18}
+          />
           <span className="text-xs font-mono text-slate-400 min-w-10 text-right">
             {data.clicks} clicks
           </span>

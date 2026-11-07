@@ -15,10 +15,21 @@ void main() {
       expect((link as PatchworkNodeDeepLink).nodeId, equals('node-999'));
     });
 
+    test('rejects PatchWork node link with extra segments', () {
+      final link = SunshadeDeepLinkParser.parse('https://links.sunshade.icu/pw/node-1/extra');
+      expect(link, isA<UnrecognizedDeepLink>());
+    });
+
     test('parses app route deep link', () {
       final link = SunshadeDeepLinkParser.parse('https://links.sunshade.icu/app/makerverse/canvas');
       expect(link, isA<AppRouteDeepLink>());
       expect((link as AppRouteDeepLink).route, equals('makerverse/canvas'));
+    });
+
+    test('parses deeply nested app routes', () {
+      final link = SunshadeDeepLinkParser.parse('https://links.sunshade.icu/app/patchwork/parcels/123/survey');
+      expect(link, isA<AppRouteDeepLink>());
+      expect((link as AppRouteDeepLink).route, equals('patchwork/parcels/123/survey'));
     });
 
     test('parses generic short link with channel', () {
@@ -29,12 +40,30 @@ void main() {
       expect(generic.channel, equals('bsky'));
     });
 
+    test('rejects generic short link with extra segments', () {
+      final link = SunshadeDeepLinkParser.parse('https://links.sunshade.icu/launch/bsky/extra');
+      expect(link, isA<UnrecognizedDeepLink>());
+    });
+
     test('parses generic short link without channel', () {
       final link = SunshadeDeepLinkParser.parse('https://links.sunshade.icu/civic-summit');
       expect(link, isA<GenericShortLink>());
       final generic = link as GenericShortLink;
       expect(generic.slug, equals('civic-summit'));
       expect(generic.channel, isNull);
+    });
+
+    test('rejects untrusted schemes like ftp or file', () {
+      final ftpLink = SunshadeDeepLinkParser.parse('ftp://links.sunshade.icu/pw/node-1');
+      expect(ftpLink, isA<UnrecognizedDeepLink>());
+
+      final fileLink = SunshadeDeepLinkParser.parse('file:///links.sunshade.icu/pw/node-1');
+      expect(fileLink, isA<UnrecognizedDeepLink>());
+    });
+
+    test('rejects hostless paths', () {
+      final hostless = SunshadeDeepLinkParser.parse('/pw/node-1');
+      expect(hostless, isA<UnrecognizedDeepLink>());
     });
 
     test('returns UnrecognizedDeepLink for foreign hosts', () {

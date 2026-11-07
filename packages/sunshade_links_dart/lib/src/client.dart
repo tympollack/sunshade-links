@@ -16,12 +16,14 @@ class SunshadeLinksClient {
   final String baseUrl;
   final String? apiKey;
   final http.Client _client;
+  final bool _isClientOwned;
 
   SunshadeLinksClient({
     this.baseUrl = 'https://links.sunshade.icu',
     this.apiKey,
     http.Client? httpClient,
-  }) : _client = httpClient ?? http.Client();
+  })  : _client = httpClient ?? http.Client(),
+        _isClientOwned = httpClient == null;
 
   /// Shortens [destination] for a specific [channel] and optional vanity [slug].
   ///
@@ -99,7 +101,12 @@ class SunshadeLinksClient {
     }
   }
 
+  /// Closes the HTTP client if it was instantiated internally.
+  ///
+  /// Does NOT close injected HTTP clients provided by the caller.
   void close() {
-    _client.close();
+    if (_isClientOwned) {
+      _client.close();
+    }
   }
 }

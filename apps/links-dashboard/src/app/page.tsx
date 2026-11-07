@@ -15,12 +15,18 @@ export default function HomePage() {
         </p>
       </div>
 
-      <div className="flex gap-4">
+      <div className="flex flex-wrap gap-3 justify-center">
         <Link
-          href="/links/launch"
+          href="/links"
           className="px-4 py-2 text-xs font-medium rounded-md bg-amber-500 text-slate-950 hover:bg-amber-400 font-mono transition"
         >
-          View Dashboard Example (/links/launch) →
+          View All Links →
+        </Link>
+        <Link
+          href="/links/launch"
+          className="px-4 py-2 text-xs font-medium rounded-md bg-slate-800 text-slate-200 hover:bg-slate-700 font-mono transition"
+        >
+          Launch Campaign Example (/links/launch)
         </Link>
       </div>
     </main>
