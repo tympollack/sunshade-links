@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { InlineSparkline } from "../analytics/InlineSparkline";
+import { TrustBadge } from "../trust/TrustBadge";
 
 export interface ChannelData {
   id: string;
@@ -19,6 +20,7 @@ export interface ChannelRowProps {
   domain?: string;
   onDelete?: (id: string) => void;
   onOpenQr?: (data: ChannelData) => void;
+  onOpenTrust?: (data: ChannelData) => void;
 }
 
 export function formatVanityUrl(slug: string, channel: string, domain = "links.sunshade.icu"): string {
@@ -35,6 +37,7 @@ export function ChannelRow({
   domain = "links.sunshade.icu",
   onDelete,
   onOpenQr,
+  onOpenTrust,
 }: ChannelRowProps) {
   const [copied, setCopied] = useState(false);
   const fullUrl = formatVanityUrl(data.slug, data.channel, domain);
@@ -106,6 +109,15 @@ export function ChannelRow({
             {data.clicks} clicks
           </span>
         </div>
+
+        {/* Trust Score Badge */}
+        {data.trustScore !== undefined && (
+          <TrustBadge
+            score={data.trustScore}
+            size="sm"
+            onClick={onOpenTrust ? () => onOpenTrust(data) : undefined}
+          />
+        )}
 
         {/* Action icons / context */}
         <div className="flex items-center gap-1.5">

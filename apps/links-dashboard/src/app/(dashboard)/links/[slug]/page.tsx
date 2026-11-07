@@ -3,6 +3,8 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { ChannelRow, ChannelData, formatVanityUrl } from "@/components/links/ChannelRow";
+import { TrustBadge } from "@/components/trust/TrustBadge";
+import { TrustDrawer } from "@/components/trust/TrustDrawer";
 import {
   getDefaultChannelsForSlug,
   getChannelsForSlug,
@@ -23,8 +25,23 @@ export default function LinkChannelsPage({ params }: PageProps) {
     getDefaultChannelsForSlug(slug)
   );
   const [selectedChannel, setSelectedChannel] = useState<ChannelData | null>(null);
+  const [trustChannel, setTrustChannel] = useState<ChannelData | null>(null);
   const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [trustDrawerOpen, setTrustDrawerOpen] = useState(false);
   const [createModalOpen, setCreateModalOpen] = useState(false);
+
+  const handleOpenTrust = (channel: ChannelData) => {
+    setTrustChannel(channel);
+    setTrustDrawerOpen(true);
+  };
+
+  const avgTrustScore =
+    channels.length > 0
+      ? Math.round(
+          channels.reduce((sum, c) => sum + (c.trustScore ?? 100), 0) /
+            channels.length
+        )
+      : 100;
 
   // New channel form state & validation errors
   const [newChannelName, setNewChannelName] = useState("");
@@ -139,9 +156,19 @@ export default function LinkChannelsPage({ params }: PageProps) {
               ← All Links
             </Link>
             <span className="text-slate-600">/</span>
-            <h1 className="text-sm font-mono font-semibold text-amber-400">
-              links.sunshade.icu/{slug}
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm font-mono font-semibold text-amber-400">
+                links.sunshade.icu/{slug}
+              </h1>
+              <TrustBadge
+                score={avgTrustScore}
+                size="sm"
+                onClick={() => {
+                  setTrustChannel(channels[0] || null);
+                  setTrustDrawerOpen(true);
+                }}
+              />
+            </div>
           </div>
           <div className="text-xs text-slate-400 font-mono">
             {channels.length} {channels.length === 1 ? "Channel" : "Channels"}
@@ -168,6 +195,7 @@ export default function LinkChannelsPage({ params }: PageProps) {
               data={channel}
               onDelete={handleDelete}
               onOpenQr={handleOpenQr}
+              onOpenTrust={handleOpenTrust}
             />
           ))}
 
@@ -337,6 +365,14 @@ export default function LinkChannelsPage({ params }: PageProps) {
           </div>
         </div>
       )}
+      {/* Trust Audit Drawer */}
+      <TrustDrawer
+        isOpen={trustDrawerOpen}
+        onClose={() => setTrustDrawerOpen(false)}
+        slug={slug}
+        destinationUrl={trustChannel?.destination || `https://sunshade.icu/${slug}`}
+        trustScore={trustChannel?.trustScore ?? avgTrustScore}
+      />
     </div>
   );
 }
