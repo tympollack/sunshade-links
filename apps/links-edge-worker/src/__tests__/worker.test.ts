@@ -33,7 +33,7 @@ describe("Worker Fetch Handler", () => {
     const req = new Request("https://links.sunshade.icu/_health");
     const res = await worker.fetch(req, mockEnv, mockCtx);
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as { status: string; service: string };
     expect(body.status).toBe("healthy");
     expect(body.service).toBe("links-edge-worker");
   });
