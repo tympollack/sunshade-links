@@ -48,9 +48,9 @@ export const LAUNCH_DEFAULT_CHANNELS: ChannelData[] = [
   },
 ];
 
-const memoryStore: Record<string, ChannelData[]> = {
-  launch: [...LAUNCH_DEFAULT_CHANNELS],
-};
+// Use Map to avoid prototype inheritance collisions (e.g. constructor, toString)
+const memoryStore = new Map<string, ChannelData[]>();
+memoryStore.set("launch", [...LAUNCH_DEFAULT_CHANNELS]);
 
 const STORAGE_PREFIX = "sunshade_links_";
 
@@ -58,48 +58,82 @@ function getStorageKey(slug: string): string {
   return `${STORAGE_PREFIX}${slug}`;
 }
 
-export function getChannelsForSlug(slug: string): ChannelData[] {
-  if (typeof window !== "undefined" && window.localStorage) {
-    try {
-      const stored = window.localStorage.getItem(getStorageKey(slug));
-      if (stored) {
-        return JSON.parse(stored) as ChannelData[];
-      }
-    } catch {
-      // fallback to memory
+function getSafeLocalStorage(): Storage | null {
+  try {
+    if (typeof window !== "undefined") {
+      return window.localStorage;
     }
+  } catch {
+    // SecurityError when storage is blocked in privacy/restricted contexts
   }
-
-  if (!memoryStore[slug]) {
-    if (slug === "launch") {
-      memoryStore[slug] = [...LAUNCH_DEFAULT_CHANNELS];
-    } else {
-      memoryStore[slug] = [
-        {
-          id: `${slug}-direct`,
-          slug,
-          channel: "direct",
-          destination: `https://sunshade.icu/${slug}`,
-          clicks: 0,
-          telemetryCounts: [0, 0, 0, 0],
-          trustScore: 100,
-        },
-      ];
-    }
-  }
-
-  return [...memoryStore[slug]];
+  return null;
 }
 
-export function saveChannelsForSlug(slug: string, channels: ChannelData[]): void {
-  memoryStore[slug] = [...channels];
-  if (typeof window !== "undefined" && window.localStorage) {
+export function getDefaultChannelsForSlug(slug: string): ChannelData[] {
+  if (slug === "launch") {
+    return [...LAUNCH_DEFAULT_CHANNELS];
+  }
+  return [
+    {
+      id: `${slug}-direct`,
+      slug,
+      channel: "direct",
+      destination: `https://sunshade.icu/${slug}`,
+      clicks: 0,
+      telemetryCounts: [0, 0, 0, 0],
+      trustScore: 100,
+    },
+  ];
+}
+
+export function getChannelsForSlug(slug: string): ChannelData[] {
+  // 1. Check in-memory store first
+  if (memoryStore.has(slug)) {
+    return [...memoryStore.get(slug)!];
+  }
+
+  // 2. Check localStorage if available
+  const storage = getSafeLocalStorage();
+  if (storage) {
     try {
-      window.localStorage.setItem(getStorageKey(slug), JSON.stringify(channels));
+      const stored = storage.getItem(getStorageKey(slug));
+      if (stored) {
+        const parsed = JSON.parse(stored) as ChannelData[];
+        memoryStore.set(slug, parsed);
+        return [...parsed];
+      }
     } catch {
-      // ignore
+      // Fallback
     }
   }
+
+  // 3. Fallback to default channels
+  const defaults = getDefaultChannelsForSlug(slug);
+  memoryStore.set(slug, defaults);
+  return [...defaults];
+}
+
+export function saveChannelsForSlug(
+  slug: string,
+  channels: ChannelData[]
+): { success: boolean; error?: string } {
+  // Always update memory store so current runtime stays in sync
+  memoryStore.set(slug, [...channels]);
+
+  const storage = getSafeLocalStorage();
+  if (storage) {
+    try {
+      storage.setItem(getStorageKey(slug), JSON.stringify(channels));
+    } catch (err) {
+      // QuotaExceededError or write failure
+      return {
+        success: false,
+        error: `Could not persist to storage: ${err instanceof Error ? err.message : "quota exceeded"}`,
+      };
+    }
+  }
+
+  return { success: true };
 }
 
 export function addChannelForSlug(
@@ -119,8 +153,7 @@ export function addChannelForSlug(
   }
 
   const updated = [...channels, newChannel];
-  saveChannelsForSlug(slug, updated);
-  return { success: true };
+  return saveChannelsForSlug(slug, updated);
 }
 
 export function deleteChannelForSlug(slug: string, id: string): void {
@@ -130,20 +163,48 @@ export function deleteChannelForSlug(slug: string, id: string): void {
 }
 
 export function getAllCampaigns(): LinkCampaign[] {
-  const launchChannels = getChannelsForSlug("launch");
-  const totalClicks = launchChannels.reduce((sum, c) => sum + c.clicks, 0);
-  const avgTrustScore = launchChannels.length > 0
-    ? Math.round(launchChannels.reduce((sum, c) => sum + (c.trustScore ?? 100), 0) / launchChannels.length)
-    : 100;
+  // Collect all known slugs from memoryStore and localStorage
+  const slugs = new Set<string>(memoryStore.keys());
 
-  return [
-    {
-      slug: "launch",
-      title: "SunShade Ecosystem Launch",
-      channelCount: launchChannels.length,
+  const storage = getSafeLocalStorage();
+  if (storage) {
+    try {
+      for (let i = 0; i < storage.length; i++) {
+        const key = storage.key(i);
+        if (key && key.startsWith(STORAGE_PREFIX)) {
+          slugs.add(key.slice(STORAGE_PREFIX.length));
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  slugs.add("launch");
+
+  return Array.from(slugs).map((slug) => {
+    const channels = getChannelsForSlug(slug);
+    const totalClicks = channels.reduce((sum, c) => sum + c.clicks, 0);
+    const avgTrustScore =
+      channels.length > 0
+        ? Math.round(
+            channels.reduce((sum, c) => sum + (c.trustScore ?? 100), 0) /
+              channels.length
+          )
+        : 100;
+    const directChannel = channels.find((c) => c.channel === "direct");
+
+    return {
+      slug,
+      title:
+        slug === "launch"
+          ? "SunShade Ecosystem Launch"
+          : `Campaign /${slug}`,
+      channelCount: channels.length,
       totalClicks,
       avgTrustScore,
-      destination: "https://sunshade.icu/launch",
-    },
-  ];
+      destination:
+        directChannel?.destination || `https://sunshade.icu/${slug}`,
+    };
+  });
 }

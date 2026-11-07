@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { ChannelRow, ChannelData, formatVanityUrl } from "@/components/links/ChannelRow";
 import {
+  getDefaultChannelsForSlug,
   getChannelsForSlug,
   addChannelForSlug,
   deleteChannelForSlug,
@@ -17,8 +18,9 @@ export default function LinkChannelsPage({ params }: PageProps) {
   const unwrappedParams = React.use(params);
   const slug = unwrappedParams.slug || "link";
 
+  // Initialize with server/default channels to avoid hydration mismatches
   const [channels, setChannels] = useState<ChannelData[]>(() =>
-    getChannelsForSlug(slug)
+    getDefaultChannelsForSlug(slug)
   );
   const [selectedChannel, setSelectedChannel] = useState<ChannelData | null>(null);
   const [qrModalOpen, setQrModalOpen] = useState(false);
@@ -29,7 +31,7 @@ export default function LinkChannelsPage({ params }: PageProps) {
   const [newDestination, setNewDestination] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Re-sync with client storage on mount (e.g., if channels were updated or loaded from localStorage)
+  // Load persisted channels after mount to ensure seamless hydration
   useEffect(() => {
     setChannels(getChannelsForSlug(slug));
   }, [slug]);
@@ -213,7 +215,7 @@ export default function LinkChannelsPage({ params }: PageProps) {
               </div>
             )}
 
-            <form onSubmit={handleCreateChannel} className="space-y-4">
+            <form onSubmit={handleCreateChannel} noValidate className="space-y-4">
               <div>
                 <label className="block text-xs font-mono text-slate-300 mb-1">
                   Channel Identifier (e.g. bsky, linkedin, substack, qr)
@@ -221,7 +223,6 @@ export default function LinkChannelsPage({ params }: PageProps) {
                 <input
                   type="text"
                   required
-                  pattern="[a-zA-Z0-9_-]+"
                   value={newChannelName}
                   onChange={(e) => {
                     setNewChannelName(e.target.value);

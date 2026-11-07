@@ -4,12 +4,11 @@ import {
   addChannelForSlug,
   deleteChannelForSlug,
   getAllCampaigns,
-  LAUNCH_DEFAULT_CHANNELS,
+  getDefaultChannelsForSlug,
 } from "../lib/store";
 
 describe("Links Store", () => {
   beforeEach(() => {
-    // Reset launch channels
     deleteChannelForSlug("launch", "test-ch");
   });
 
@@ -18,6 +17,17 @@ describe("Links Store", () => {
     expect(channels.length).toBeGreaterThanOrEqual(4);
     expect(channels.some((c) => c.channel === "direct")).toBe(true);
     expect(channels.some((c) => c.channel === "bsky")).toBe(true);
+  });
+
+  it("handles reserved prototype slugs (constructor, toString, valueOf) gracefully without crashing", () => {
+    const constructorChannels = getChannelsForSlug("constructor");
+    expect(constructorChannels).toBeDefined();
+    expect(Array.isArray(constructorChannels)).toBe(true);
+    expect(constructorChannels[0].slug).toBe("constructor");
+
+    const toStringChannels = getChannelsForSlug("toString");
+    expect(toStringChannels).toBeDefined();
+    expect(Array.isArray(toStringChannels)).toBe(true);
   });
 
   it("prevents duplicate channel creation for the same slug", () => {
@@ -68,7 +78,7 @@ describe("Links Store", () => {
     expect(updated.some((c) => c.id === "ch-to-delete")).toBe(false);
   });
 
-  it("computes accurate campaign metrics", () => {
+  it("computes accurate campaign metrics across stored slugs", () => {
     const campaigns = getAllCampaigns();
     expect(campaigns.length).toBeGreaterThan(0);
     const launch = campaigns.find((c) => c.slug === "launch");
