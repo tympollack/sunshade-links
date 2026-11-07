@@ -18,7 +18,7 @@ export default function LinkChannelsPage({ params }: PageProps) {
   const unwrappedParams = React.use(params);
   const slug = unwrappedParams.slug || "link";
 
-  // Initialize with server/default channels to avoid hydration mismatches
+  // Initialize with server-safe defaults to avoid hydration mismatches
   const [channels, setChannels] = useState<ChannelData[]>(() =>
     getDefaultChannelsForSlug(slug)
   );
@@ -37,7 +37,11 @@ export default function LinkChannelsPage({ params }: PageProps) {
   }, [slug]);
 
   const handleDelete = (id: string) => {
-    deleteChannelForSlug(slug, id);
+    const res = deleteChannelForSlug(slug, id);
+    if (!res.success) {
+      alert(res.error || "Failed to delete channel.");
+      return;
+    }
     setChannels(getChannelsForSlug(slug));
   };
 
@@ -85,11 +89,28 @@ export default function LinkChannelsPage({ params }: PageProps) {
       return;
     }
 
+    const dest = newDestination.trim();
+    if (!dest) {
+      setFormError("Destination URL is required.");
+      return;
+    }
+
+    try {
+      const parsedUrl = new URL(dest);
+      if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+        setFormError("Destination URL must use http:// or https://");
+        return;
+      }
+    } catch {
+      setFormError("Invalid destination URL. Please enter a valid URL.");
+      return;
+    }
+
     const newChannelItem: ChannelData = {
       id: `ch-${Date.now()}`,
       slug,
       channel: cleanChannel,
-      destination: newDestination.trim() || `https://sunshade.icu/${slug}`,
+      destination: dest,
       clicks: 0,
       telemetryCounts: [0, 0, 0, 0],
       trustScore: 100,
@@ -222,7 +243,6 @@ export default function LinkChannelsPage({ params }: PageProps) {
                 </label>
                 <input
                   type="text"
-                  required
                   value={newChannelName}
                   onChange={(e) => {
                     setNewChannelName(e.target.value);
@@ -238,10 +258,12 @@ export default function LinkChannelsPage({ params }: PageProps) {
                   Destination URL
                 </label>
                 <input
-                  type="url"
-                  required
+                  type="text"
                   value={newDestination}
-                  onChange={(e) => setNewDestination(e.target.value)}
+                  onChange={(e) => {
+                    setNewDestination(e.target.value);
+                    if (formError) setFormError(null);
+                  }}
                   placeholder="https://sunshade.icu/..."
                   className="w-full px-3 py-2 text-xs font-mono rounded bg-slate-950 border border-slate-800 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-amber-500"
                 />

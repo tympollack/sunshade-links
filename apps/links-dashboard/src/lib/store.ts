@@ -107,32 +107,30 @@ export function getChannelsForSlug(slug: string): ChannelData[] {
     }
   }
 
-  // 3. Fallback to default channels
-  const defaults = getDefaultChannelsForSlug(slug);
-  memoryStore.set(slug, defaults);
-  return [...defaults];
+  // 3. Fallback to default channels without polluting memoryStore
+  return getDefaultChannelsForSlug(slug);
 }
 
 export function saveChannelsForSlug(
   slug: string,
   channels: ChannelData[]
 ): { success: boolean; error?: string } {
-  // Always update memory store so current runtime stays in sync
-  memoryStore.set(slug, [...channels]);
-
   const storage = getSafeLocalStorage();
   if (storage) {
     try {
       storage.setItem(getStorageKey(slug), JSON.stringify(channels));
     } catch (err) {
-      // QuotaExceededError or write failure
+      // Storage quota blocked or write failure:
+      // Do not update memoryStore to the failed value so the store remains truthful
       return {
         success: false,
-        error: `Could not persist to storage: ${err instanceof Error ? err.message : "quota exceeded"}`,
+        error: `Could not persist channel: ${err instanceof Error ? err.message : "storage quota exceeded"}`,
       };
     }
   }
 
+  // Update in-memory store once persistence succeeds (or when storage is unavailable in memory-only mode)
+  memoryStore.set(slug, [...channels]);
   return { success: true };
 }
 
@@ -156,10 +154,32 @@ export function addChannelForSlug(
   return saveChannelsForSlug(slug, updated);
 }
 
-export function deleteChannelForSlug(slug: string, id: string): void {
+export function deleteChannelForSlug(
+  slug: string,
+  id: string
+): { success: boolean; error?: string } {
   const channels = getChannelsForSlug(slug);
   const updated = channels.filter((c) => c.id !== id);
-  saveChannelsForSlug(slug, updated);
+  return saveChannelsForSlug(slug, updated);
+}
+
+export function getServerStableCampaigns(): LinkCampaign[] {
+  const launchChannels = LAUNCH_DEFAULT_CHANNELS;
+  const totalClicks = launchChannels.reduce((sum, c) => sum + c.clicks, 0);
+  const avgTrustScore = Math.round(
+    launchChannels.reduce((sum, c) => sum + (c.trustScore ?? 100), 0) /
+      launchChannels.length
+  );
+  return [
+    {
+      slug: "launch",
+      title: "SunShade Ecosystem Launch",
+      channelCount: launchChannels.length,
+      totalClicks,
+      avgTrustScore,
+      destination: "https://sunshade.icu/launch",
+    },
+  ];
 }
 
 export function getAllCampaigns(): LinkCampaign[] {

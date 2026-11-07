@@ -2,13 +2,19 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { getAllCampaigns, LinkCampaign } from "@/lib/store";
+import {
+  getAllCampaigns,
+  getServerStableCampaigns,
+  LinkCampaign,
+} from "@/lib/store";
 
 export default function LinksListingPage() {
+  // Initialize with server-stable snapshot (launch only) to prevent SSR/CSR hydration mismatch
   const [campaigns, setCampaigns] = useState<LinkCampaign[]>(() =>
-    getAllCampaigns()
+    getServerStableCampaigns()
   );
 
+  // Hydrate client storage after mount
   useEffect(() => {
     setCampaigns(getAllCampaigns());
   }, []);
