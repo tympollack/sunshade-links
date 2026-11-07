@@ -1,68 +1,16 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { ChannelRow, ChannelData, formatVanityUrl } from "@/components/links/ChannelRow";
+import {
+  getChannelsForSlug,
+  addChannelForSlug,
+  deleteChannelForSlug,
+} from "@/lib/store";
 
 interface PageProps {
   params: Promise<{ slug: string }>;
-}
-
-const LAUNCH_DEFAULT_CHANNELS: ChannelData[] = [
-  {
-    id: "ch-1",
-    slug: "launch",
-    channel: "direct",
-    destination: "https://sunshade.icu/launch",
-    clicks: 142,
-    telemetryCounts: [12, 18, 25, 30, 42, 55],
-    trustScore: 98,
-  },
-  {
-    id: "ch-2",
-    slug: "launch",
-    channel: "bsky",
-    destination: "https://sunshade.icu/launch?utm_source=bsky",
-    clicks: 89,
-    telemetryCounts: [5, 12, 15, 20, 24, 28],
-    trustScore: 95,
-  },
-  {
-    id: "ch-3",
-    slug: "launch",
-    channel: "x",
-    destination: "https://sunshade.icu/launch?utm_source=x",
-    clicks: 64,
-    telemetryCounts: [20, 18, 14, 10, 8, 4],
-    trustScore: 88,
-  },
-  {
-    id: "ch-4",
-    slug: "launch",
-    channel: "qr",
-    destination: "https://sunshade.icu/launch?utm_source=flypack_qr",
-    clicks: 210,
-    telemetryCounts: [10, 25, 40, 70, 110, 155],
-    trustScore: 100,
-  },
-];
-
-function getInitialChannels(slug: string): ChannelData[] {
-  if (slug === "launch") {
-    return LAUNCH_DEFAULT_CHANNELS;
-  }
-  // For non-launch slugs, generate slug-specific default channel
-  return [
-    {
-      id: `${slug}-direct`,
-      slug,
-      channel: "direct",
-      destination: `https://sunshade.icu/${slug}`,
-      clicks: 0,
-      telemetryCounts: [0, 0, 0, 0],
-      trustScore: 100,
-    },
-  ];
 }
 
 export default function LinkChannelsPage({ params }: PageProps) {
@@ -70,18 +18,25 @@ export default function LinkChannelsPage({ params }: PageProps) {
   const slug = unwrappedParams.slug || "link";
 
   const [channels, setChannels] = useState<ChannelData[]>(() =>
-    getInitialChannels(slug)
+    getChannelsForSlug(slug)
   );
   const [selectedChannel, setSelectedChannel] = useState<ChannelData | null>(null);
   const [qrModalOpen, setQrModalOpen] = useState(false);
   const [createModalOpen, setCreateModalOpen] = useState(false);
 
-  // New channel form state
+  // New channel form state & validation errors
   const [newChannelName, setNewChannelName] = useState("");
   const [newDestination, setNewDestination] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  // Re-sync with client storage on mount (e.g., if channels were updated or loaded from localStorage)
+  useEffect(() => {
+    setChannels(getChannelsForSlug(slug));
+  }, [slug]);
 
   const handleDelete = (id: string) => {
-    setChannels((prev) => prev.filter((c) => c.id !== id));
+    deleteChannelForSlug(slug, id);
+    setChannels(getChannelsForSlug(slug));
   };
 
   const handleOpenQr = (channel: ChannelData) => {
@@ -92,13 +47,41 @@ export default function LinkChannelsPage({ params }: PageProps) {
   const handleOpenCreateModal = () => {
     setNewChannelName("");
     setNewDestination(`https://sunshade.icu/${slug}`);
+    setFormError(null);
     setCreateModalOpen(true);
   };
 
   const handleCreateChannel = (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanChannel = newChannelName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
-    if (!cleanChannel) return;
+    setFormError(null);
+
+    const rawInput = newChannelName.trim();
+    if (!rawInput) {
+      setFormError("Channel identifier is required.");
+      return;
+    }
+
+    // Verify valid alphanumeric, dash, or underscore characters
+    const validPattern = /^[a-zA-Z0-9_-]+$/;
+    if (!validPattern.test(rawInput)) {
+      setFormError(
+        "Invalid identifier: only letters, numbers, hyphens (-), and underscores (_) are allowed."
+      );
+      return;
+    }
+
+    const cleanChannel = rawInput.toLowerCase();
+
+    // Check for duplicate channel
+    const duplicate = channels.some(
+      (c) => c.channel.toLowerCase() === cleanChannel
+    );
+    if (duplicate) {
+      setFormError(
+        `Channel "${cleanChannel}" already exists for this link. Choose a unique channel name.`
+      );
+      return;
+    }
 
     const newChannelItem: ChannelData = {
       id: `ch-${Date.now()}`,
@@ -110,7 +93,13 @@ export default function LinkChannelsPage({ params }: PageProps) {
       trustScore: 100,
     };
 
-    setChannels((prev) => [...prev, newChannelItem]);
+    const result = addChannelForSlug(slug, newChannelItem);
+    if (!result.success) {
+      setFormError(result.error ?? "Failed to add channel.");
+      return;
+    }
+
+    setChannels(getChannelsForSlug(slug));
     setCreateModalOpen(false);
   };
 
@@ -215,6 +204,15 @@ export default function LinkChannelsPage({ params }: PageProps) {
               </button>
             </div>
 
+            {formError && (
+              <div
+                role="alert"
+                className="p-3 text-xs rounded bg-rose-500/10 border border-rose-500/30 text-rose-300"
+              >
+                {formError}
+              </div>
+            )}
+
             <form onSubmit={handleCreateChannel} className="space-y-4">
               <div>
                 <label className="block text-xs font-mono text-slate-300 mb-1">
@@ -223,8 +221,12 @@ export default function LinkChannelsPage({ params }: PageProps) {
                 <input
                   type="text"
                   required
+                  pattern="[a-zA-Z0-9_-]+"
                   value={newChannelName}
-                  onChange={(e) => setNewChannelName(e.target.value)}
+                  onChange={(e) => {
+                    setNewChannelName(e.target.value);
+                    if (formError) setFormError(null);
+                  }}
                   placeholder="e.g. bsky"
                   className="w-full px-3 py-2 text-xs font-mono rounded bg-slate-950 border border-slate-800 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-amber-500"
                 />

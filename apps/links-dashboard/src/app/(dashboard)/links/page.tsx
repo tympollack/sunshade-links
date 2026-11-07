@@ -1,26 +1,18 @@
+"use client";
+
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
-
-interface LinkCampaign {
-  slug: string;
-  title: string;
-  channelCount: number;
-  totalClicks: number;
-  avgTrustScore: number;
-  destination: string;
-}
-
-const CAMPAIGNS: LinkCampaign[] = [
-  {
-    slug: "launch",
-    title: "SunShade Ecosystem Launch",
-    channelCount: 4,
-    totalClicks: 505,
-    avgTrustScore: 95,
-    destination: "https://sunshade.icu/launch",
-  },
-];
+import { getAllCampaigns, LinkCampaign } from "@/lib/store";
 
 export default function LinksListingPage() {
+  const [campaigns, setCampaigns] = useState<LinkCampaign[]>(() =>
+    getAllCampaigns()
+  );
+
+  useEffect(() => {
+    setCampaigns(getAllCampaigns());
+  }, []);
+
   return (
     <div className="flex flex-col min-h-[100dvh] bg-slate-950 text-slate-100 pb-[env(safe-area-inset-bottom,24px)]">
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/80 backdrop-blur px-4 py-3.5 sm:px-6">
@@ -49,7 +41,7 @@ export default function LinksListingPage() {
         </div>
 
         <div className="space-y-3">
-          {CAMPAIGNS.map((item) => (
+          {campaigns.map((item) => (
             <Link
               key={item.slug}
               href={`/links/${item.slug}`}
