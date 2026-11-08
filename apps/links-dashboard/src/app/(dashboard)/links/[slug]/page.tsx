@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import QRCode from "qrcode";
 import { ChannelRow, ChannelData, formatVanityUrl } from "@/components/links/ChannelRow";
 import { TrustBadge } from "@/components/trust/TrustBadge";
 import { TrustDrawer } from "@/components/trust/TrustDrawer";
@@ -28,6 +29,7 @@ export default function LinkChannelsPage({ params }: PageProps) {
   const [selectedChannel, setSelectedChannel] = useState<ChannelData | null>(null);
   const [trustChannel, setTrustChannel] = useState<ChannelData | null>(null);
   const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [trustDrawerOpen, setTrustDrawerOpen] = useState(false);
   const [createModalOpen, setCreateModalOpen] = useState(false);
 
@@ -75,7 +77,13 @@ export default function LinkChannelsPage({ params }: PageProps) {
             for (const sc of serverChannels) {
               const idx = merged.findIndex((c) => c.channel === sc.channel);
               if (idx >= 0) {
-                merged[idx] = { ...merged[idx], destination: sc.destination, trustScore: sc.trustScore };
+                // Preserve server UUID id so deletions persist properly (ANALYSIS_0002)
+                merged[idx] = {
+                  ...merged[idx],
+                  id: sc.id,
+                  destination: sc.destination,
+                  trustScore: sc.trustScore,
+                };
               } else {
                 merged.push(sc);
               }
@@ -88,6 +96,7 @@ export default function LinkChannelsPage({ params }: PageProps) {
   }, [slug]);
 
   const handleDelete = async (id: string) => {
+    const channelToDelete = channels.find((c) => c.id === id);
     const res = deleteChannelForSlug(slug, id);
     if (!res.success) {
       alert(res.error || "Failed to delete channel.");
@@ -95,17 +104,32 @@ export default function LinkChannelsPage({ params }: PageProps) {
     }
     setChannels(getChannelsForSlug(slug));
 
-    if (id && !id.startsWith("ch-")) {
+    const targetId = channelToDelete?.id || id;
+    if (targetId && !targetId.startsWith("ch-")) {
       try {
-        await fetch(`/api/v1/links/${id}`, { method: "DELETE" });
+        await fetch(`/api/v1/links/${targetId}`, { method: "DELETE" });
       } catch {
         // Ignore network delete error
       }
     }
   };
 
-  const handleOpenQr = (channel: ChannelData) => {
+  const handleOpenQr = async (channel: ChannelData) => {
     setSelectedChannel(channel);
+    const targetUrl = formatVanityUrl(channel.slug, channel.channel);
+    try {
+      const dataUrl = await QRCode.toDataURL(targetUrl, {
+        width: 180,
+        margin: 2,
+        color: {
+          dark: "#020617",
+          light: "#FFFFFF",
+        },
+      });
+      setQrDataUrl(dataUrl);
+    } catch {
+      setQrDataUrl(null);
+    }
     setQrModalOpen(true);
   };
 
@@ -116,7 +140,7 @@ export default function LinkChannelsPage({ params }: PageProps) {
     setCreateModalOpen(true);
   };
 
-  const handleCreateChannel = (e: React.FormEvent) => {
+  const handleCreateChannel = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
@@ -175,14 +199,22 @@ export default function LinkChannelsPage({ params }: PageProps) {
       trustScore: 100,
     };
 
+    // Await server persistence before adding to local state (ANALYSIS_0004 & ANALYSIS_0002)
+    const syncRes = await syncChannelToServer(slug, newChannelItem);
+    if (!syncRes.success) {
+      setFormError(syncRes.error || "Failed to publish channel to server. Please try again.");
+      return;
+    }
+
+    if (syncRes.data?.id) {
+      newChannelItem.id = syncRes.data.id;
+    }
+
     const result = addChannelForSlug(slug, newChannelItem);
     if (!result.success) {
       setFormError(result.error ?? "Failed to add channel.");
       return;
     }
-
-    // Persist channel to backend API so Worker and DB resolve the new channel destination (BUG_0004)
-    syncChannelToServer(slug, newChannelItem).catch(() => {});
 
     setChannels(getChannelsForSlug(slug));
     setCreateModalOpen(false);
@@ -388,16 +420,19 @@ export default function LinkChannelsPage({ params }: PageProps) {
             </div>
 
             <div className="p-4 bg-white rounded-lg flex flex-col items-center justify-center space-y-3">
-              <img
-                src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(
-                  formatVanityUrl(selectedChannel.slug, selectedChannel.channel)
-                )}`}
-                alt={`Scannable QR code for ${formatVanityUrl(selectedChannel.slug, selectedChannel.channel)}`}
-                width={180}
-                height={180}
-                className="w-44 h-44 rounded"
-                loading="lazy"
-              />
+              {qrDataUrl ? (
+                <img
+                  src={qrDataUrl}
+                  alt={`Scannable QR code for ${formatVanityUrl(selectedChannel.slug, selectedChannel.channel)}`}
+                  width={180}
+                  height={180}
+                  className="w-44 h-44 rounded"
+                />
+              ) : (
+                <div className="w-44 h-44 flex items-center justify-center text-xs text-slate-500 font-mono">
+                  Generating secure QR...
+                </div>
+              )}
               <span className="text-[11px] font-mono text-slate-700 break-all text-center max-w-[200px]">
                 {formatVanityUrl(selectedChannel.slug, selectedChannel.channel)}
               </span>

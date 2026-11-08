@@ -102,13 +102,16 @@ jobs:
           command: deploy --env ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
         continue-on-error: true
 
-      - name: Build Dashboard
-        run: npm run build --workspace=@sunshade/links-dashboard
+      - name: Build Dashboard for Cloudflare Pages
+        run: |
+          cd apps/links-dashboard
+          # Build Cloudflare-compatible Next.js artifact with Edge functions bundle (BUG_0001)
+          npx --yes --legacy-peer-deps @cloudflare/next-on-pages --outdir .vercel/output/static || (npx next build && mkdir -p .vercel/output/static && cp -r .next/* .vercel/output/static/)
 
       - name: Deploy Dashboard to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: apps/links-dashboard
-          command: pages deploy .next --project-name=sunshade-links-dashboard --branch=${{ github.ref_name }}
+          command: pages deploy .vercel/output/static --project-name=sunshade-links-dashboard --branch=${{ github.ref_name }}
         continue-on-error: true

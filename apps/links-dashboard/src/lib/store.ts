@@ -142,8 +142,8 @@ export function saveChannelsForSlug(
 export async function syncChannelToServer(
   slug: string,
   channel: ChannelData
-): Promise<boolean> {
-  if (typeof window === "undefined") return false;
+): Promise<{ success: boolean; data?: any; error?: string }> {
+  if (typeof window === "undefined") return { success: false, error: "SSR environment" };
   try {
     const res = await fetch("/api/v1/links", {
       method: "POST",
@@ -154,9 +154,14 @@ export async function syncChannelToServer(
         destination_url: channel.destination,
       }),
     });
-    return res.ok;
-  } catch {
-    return false;
+    if (!res.ok) {
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
+      return { success: false, error: json.error || `Server returned ${res.status}` };
+    }
+    const json = (await res.json()) as { success: boolean; data?: any };
+    return { success: true, data: json.data };
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : "Network error" };
   }
 }
 

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:http/http.dart' as http;
 
 class SunshadeLinksException implements Exception {
@@ -17,6 +18,8 @@ class SunshadeLinksClient {
   final String? apiKey;
   final http.Client _client;
   final bool _isClientOwned;
+  static int _slugCounter = 0;
+  static final Random _random = Random();
 
   SunshadeLinksClient({
     this.baseUrl = 'https://links.sunshade.icu',
@@ -41,10 +44,10 @@ class SunshadeLinksClient {
         if (apiKey != null) 'Authorization': 'Bearer $apiKey',
       };
 
-      // Fallback slug generation strategy if caller omits vanity slug
+      // Fallback slug generation strategy if caller omits vanity slug (ANALYSIS_0007)
       final effectiveSlug = (slug != null && slug.isNotEmpty)
           ? slug
-          : 'lnk_${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}';
+          : 'lnk_${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}_${(_slugCounter++ & 0xffff).toRadixString(36)}_${_random.nextInt(0x10000).toRadixString(36)}';
 
       final body = jsonEncode({
         'destination': destination,

@@ -161,18 +161,37 @@ export function saveBioProfile(profile: BioProfile): { success: boolean; error?:
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : "Storage error" };
     }
-
-    // Non-blocking sync to server endpoint
-    try {
-      fetch(`/api/v1/bio/${cleanUsername}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(copy),
-      }).catch(() => {});
-    } catch {
-      // Ignore background sync errors
-    }
   }
 
   return { success: true };
+}
+
+/**
+ * Awaits server-side durable persistence before updating local cache (BUG_0003 & ANALYSIS_0005)
+ */
+export async function saveBioProfileAsync(profile: BioProfile): Promise<{ success: boolean; error?: string }> {
+  const cleanUsername = profile.username.toLowerCase().replace(/^@/, "");
+  const copy: BioProfile = JSON.parse(JSON.stringify(profile));
+
+  if (typeof window !== "undefined" || (typeof process !== "undefined" && process.env.NODE_ENV === "test")) {
+    try {
+      const res = await fetch(`/api/v1/bio/${cleanUsername}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(copy),
+      });
+
+      if (!res.ok) {
+        const errJson = (await res.json().catch(() => ({}))) as { error?: string };
+        return { success: false, error: errJson.error || `Server save failed (${res.status})` };
+      }
+    } catch (err: unknown) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : "Failed to connect to bio service",
+      };
+    }
+  }
+
+  return saveBioProfile(copy);
 }

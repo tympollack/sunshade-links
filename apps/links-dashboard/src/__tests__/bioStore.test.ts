@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { getBioProfile, saveBioProfile, resetBioStore } from "../lib/bioStore";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { getBioProfile, saveBioProfile, saveBioProfileAsync, resetBioStore } from "../lib/bioStore";
 
 describe("BioStore Server Persistence (BUG_0006)", () => {
   beforeEach(() => {
@@ -28,5 +28,35 @@ describe("BioStore Server Persistence (BUG_0006)", () => {
   it("handles @ handle prefix cleanly", () => {
     const profile = getBioProfile("@tymz");
     expect(profile.username).toBe("tymz");
+  });
+
+  it("propagates failure when server persistence fails in saveBioProfileAsync (ANALYSIS_0005)", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "DB connection timeout" }), { status: 500 }));
+
+    try {
+      const profile = getBioProfile("tymz");
+      profile.displayName = "Failed Update";
+      const res = await saveBioProfileAsync(profile);
+      expect(res.success).toBe(false);
+      expect(res.error).toContain("DB connection timeout");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("succeeds when server persistence confirms save in saveBioProfileAsync", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+    try {
+      const profile = getBioProfile("tymz");
+      profile.displayName = "Confirmed Update";
+      const res = await saveBioProfileAsync(profile);
+      expect(res.success).toBe(true);
+      expect(getBioProfile("tymz").displayName).toBe("Confirmed Update");
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 });

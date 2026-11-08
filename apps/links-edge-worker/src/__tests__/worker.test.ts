@@ -203,31 +203,136 @@ describe("Worker Fetch Handler", () => {
     const req1 = new Request("https://links.sunshade.icu/secret");
     const res1 = await worker.fetch(req1, mockEnv, mockCtx);
     expect(res1.status).toBe(401);
+    expect(await res1.text()).toContain('<form method="POST">');
 
-    // 2. Wrong password -> 401 with error
-    const req2 = new Request("https://links.sunshade.icu/secret?pass=wrong");
+    // 2. Wrong password via POST -> 401 with error (SEC_0003)
+    const formDataWrong = new FormData();
+    formDataWrong.set("pass", "wrong");
+    const req2 = new Request("https://links.sunshade.icu/secret", {
+      method: "POST",
+      body: formDataWrong,
+    });
     const res2 = await worker.fetch(req2, mockEnv, mockCtx);
     expect(res2.status).toBe(401);
     const html = await res2.text();
     expect(html).toContain("Incorrect password");
 
-    // 3. Correct password -> 302
-    const req3 = new Request("https://links.sunshade.icu/secret?pass=123");
+    // 3. Correct password via POST -> 303 redirect with cookie (SEC_0003)
+    const formDataRight = new FormData();
+    formDataRight.set("pass", "123");
+    const req3 = new Request("https://links.sunshade.icu/secret", {
+      method: "POST",
+      body: formDataRight,
+    });
     const res3 = await worker.fetch(req3, mockEnv, mockCtx);
-    expect(res3.status).toBe(302);
+    expect(res3.status).toBe(303);
     expect(res3.headers.get("location")).toBe("https://target.com/vault");
+    expect(res3.headers.get("set-cookie")).toContain("sunshade_unlocked_secret=1");
+
+    // 4. Subsequent GET with cookie -> 302 without password prompt
+    const req4 = new Request("https://links.sunshade.icu/secret", {
+      headers: { cookie: "sunshade_unlocked_secret=1" },
+    });
+    const res4 = await worker.fetch(req4, mockEnv, mockCtx);
+    expect(res4.status).toBe(302);
+    expect(res4.headers.get("location")).toBe("https://target.com/vault");
   });
 
-  it("reserves dashboard routes and does not treat them as shortlinks (BUG_0002)", async () => {
-    const req1 = new Request("https://links.sunshade.icu/links");
+  it("verifies salted PBKDF2 password hashes (SEC_0004)", async () => {
+    // Generate salt and PBKDF2 hash for "topsecret"
+    const saltHex = "0102030405060708090a0b0c0d0e0f10";
+    const enc = new TextEncoder();
+    const saltBytes = new Uint8Array(saltHex.match(/.{1,2}/g)!.map((b) => parseInt(b, 16)));
+    const keyMaterial = await crypto.subtle.importKey(
+      "raw",
+      enc.encode("topsecret"),
+      "PBKDF2",
+      false,
+      ["deriveBits"]
+    );
+    const derived = await crypto.subtle.deriveBits(
+      { name: "PBKDF2", salt: saltBytes, iterations: 100000, hash: "SHA-256" },
+      keyMaterial,
+      256
+    );
+    const derivedHex = Array.from(new Uint8Array(derived)).map((b) => b.toString(16).padStart(2, "0")).join("");
+    const storedHash = `${saltHex}:${derivedHex}`;
+
+    const pbkdf2Record: CachedLinkRecord = {
+      id: "lnk_pbkdf2",
+      tenant_id: "ten_1",
+      slug: "vault",
+      destination_url: "https://target.com/classified",
+      is_active: true,
+      password_hash: storedHash,
+      trust_score: 99,
+    };
+    (mockEnv.LINKS_KV.get as any).mockResolvedValue(pbkdf2Record);
+
+    const formData = new FormData();
+    formData.set("pass", "topsecret");
+    const req = new Request("https://links.sunshade.icu/vault", { method: "POST", body: formData });
+    const res = await worker.fetch(req, mockEnv, mockCtx);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("https://target.com/classified");
+  });
+
+  it("rejects inactive or unverified custom domains with 403 / 404 (SEC_0002)", async () => {
+    // 1. Unknown custom domain -> 404
+    (mockEnv.LINKS_KV.get as any).mockResolvedValueOnce(null);
+    const req1 = new Request("https://unconfigured.example.com/slug");
     const res1 = await worker.fetch(req1, mockEnv, mockCtx);
     expect(res1.status).toBe(404);
-    expect(await res1.text()).toBe("Reserved dashboard route");
-    expect(mockEnv.LINKS_KV.get).not.toHaveBeenCalled();
+    expect(await res1.text()).toContain("Domain not configured");
 
-    const req2 = new Request("https://links.sunshade.icu/api/v1/links");
+    // 2. Inactive custom domain -> 403
+    (mockEnv.LINKS_KV.get as any).mockResolvedValueOnce({
+      hostname: "disabled.example.com",
+      tenant_id: "ten_other",
+      is_active: false,
+      ssl_status: "active",
+    });
+    const req2 = new Request("https://disabled.example.com/slug");
     const res2 = await worker.fetch(req2, mockEnv, mockCtx);
-    expect(res2.status).toBe(404);
+    expect(res2.status).toBe(403);
+    expect(await res2.text()).toContain("Custom domain is inactive or SSL is pending");
+
+    // 3. SSL pending domain -> 403
+    (mockEnv.LINKS_KV.get as any).mockResolvedValueOnce({
+      hostname: "pending.example.com",
+      tenant_id: "ten_other",
+      is_active: true,
+      ssl_status: "pending",
+    });
+    const req3 = new Request("https://pending.example.com/slug");
+    const res3 = await worker.fetch(req3, mockEnv, mockCtx);
+    expect(res3.status).toBe(403);
+  });
+
+  it("reserves dashboard routes and forwards to DASHBOARD_ORIGIN (BUG_0002)", async () => {
+    mockEnv.DASHBOARD_ORIGIN = "https://sunshade-links-dashboard.pages.dev";
+    const originalFetch = global.fetch;
+    const fetchSpy = vi.fn().mockResolvedValue(new Response("Dashboard HTML", { status: 200 }));
+    global.fetch = fetchSpy;
+
+    try {
+      const req1 = new Request("https://links.sunshade.icu/links");
+      const res1 = await worker.fetch(req1, mockEnv, mockCtx);
+      expect(res1.status).toBe(200);
+      expect(await res1.text()).toBe("Dashboard HTML");
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "https://sunshade-links-dashboard.pages.dev/links" })
+      );
+      expect(mockEnv.LINKS_KV.get).not.toHaveBeenCalled();
+
+      const req2 = new Request("https://links.sunshade.icu/api/v1/links");
+      await worker.fetch(req2, mockEnv, mockCtx);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "https://sunshade-links-dashboard.pages.dev/api/v1/links" })
+      );
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 });
 

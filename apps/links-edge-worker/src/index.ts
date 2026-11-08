@@ -7,7 +7,7 @@
 import { checkRateLimit, RateLimiterBinding } from "./middleware/rateLimiter";
 import { extractTelemetryEvent, TelemetryPayload } from "./lib/telemetry";
 import { sanitizeDestinationUrl, INVASIVE_TRACKERS } from "./lib/sanitizeQuery";
-import { resolveCustomDomain } from "./services/customDomains";
+import { resolveCustomDomain, isCustomDomainHost, CustomDomainConfig } from "./services/customDomains";
 import { handleWorkerHealthCheck } from "./routes/health";
 
 export interface Env {
@@ -44,12 +44,47 @@ function escapeHtml(str: string): string {
     .replace(/'/g, "&#39;");
 }
 
-async function hashPassword(candidate: string): Promise<string> {
-  const enc = new TextEncoder().encode(candidate);
-  const digest = await crypto.subtle.digest("SHA-256", enc);
+export async function hashPassword(candidate: string, saltHex?: string): Promise<string> {
+  const enc = new TextEncoder();
+  if (saltHex) {
+    const saltBytes = new Uint8Array(saltHex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
+    const keyMaterial = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(candidate),
+      "PBKDF2",
+      false,
+      ["deriveBits"]
+    );
+    const derived = await crypto.subtle.deriveBits(
+      {
+        name: "PBKDF2",
+        salt: saltBytes,
+        iterations: 100000,
+        hash: "SHA-256",
+      },
+      keyMaterial,
+      256
+    );
+    const hashHex = Array.from(new Uint8Array(derived))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    return `${saltHex}:${hashHex}`;
+  }
+
+  const digest = await crypto.subtle.digest("SHA-256", enc.encode(candidate));
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+export async function verifyPassword(candidate: string, storedHash: string): Promise<boolean> {
+  if (storedHash.includes(":")) {
+    const [saltHex] = storedHash.split(":");
+    const calculated = await hashPassword(candidate, saltHex);
+    return calculated === storedHash;
+  }
+  const rawHash = await hashPassword(candidate);
+  return rawHash === storedHash;
 }
 
 export function isReservedDashboardRoute(pathname: string): boolean {
@@ -120,7 +155,7 @@ const PASSWORD_GATE_HTML = `<!DOCTYPE html>
     <h1>Password Protected</h1>
     <p>This SunShade shortlink is password protected. Enter the passphrase to continue to destination.</p>
     {{ERROR_BLOCK}}
-    <form method="GET">
+    <form method="POST">
       <input type="password" name="pass" placeholder="Enter password" autofocus required />
       <button type="submit">Unlock & Continue</button>
     </form>
@@ -144,24 +179,35 @@ export default {
       return new Response(null, { status: 404 });
     }
 
-    // 3. Custom Hostname Root Routing (Links-in-Bio)
-    const customDomain = await resolveCustomDomain(hostname, env.LINKS_KV);
-    if (customDomain && (pathname === "/" || pathname === "")) {
-      // Route custom domain root to bio profile
-      return Response.redirect(`https://links.sunshade.icu/@${customDomain.tenant_id}`, 302);
+    // 3. Custom Hostname Resolution & Isolation (SEC_0002)
+    let customDomain: CustomDomainConfig | null = null;
+    if (isCustomDomainHost(hostname)) {
+      customDomain = await resolveCustomDomain(hostname, env.LINKS_KV);
+      if (!customDomain) {
+        return new Response("Domain not configured", { status: 404 });
+      }
+      if (!customDomain.is_active || customDomain.ssl_status !== "active") {
+        return new Response("Custom domain is inactive or SSL is pending", { status: 403 });
+      }
+      if (pathname === "/" || pathname === "") {
+        // Route custom domain root to bio profile
+        return Response.redirect(`https://links.sunshade.icu/@${customDomain.tenant_id}`, 302);
+      }
     }
 
-    // 4. Reserved Dashboard & API Routes (Partition from shortlink resolver)
+    // 4. Reserved Dashboard & API Routes (Partition from shortlink resolver - BUG_0002)
     if (isReservedDashboardRoute(pathname)) {
-      if (env.DASHBOARD_ORIGIN) {
-        const originUrl = new URL(request.url);
-        const target = new URL(env.DASHBOARD_ORIGIN);
-        originUrl.protocol = target.protocol;
-        originUrl.host = target.host;
-        originUrl.port = target.port;
-        return fetch(new Request(originUrl.toString(), request));
-      }
-      return new Response("Reserved dashboard route", { status: 404 });
+      const dashboardOrigin =
+        env.DASHBOARD_ORIGIN ||
+        (hostname.startsWith("staging")
+          ? "https://staging.sunshade-links-dashboard.pages.dev"
+          : "https://sunshade-links-dashboard.pages.dev");
+      const originUrl = new URL(request.url);
+      const target = new URL(dashboardOrigin);
+      originUrl.protocol = target.protocol;
+      originUrl.host = target.host;
+      originUrl.port = target.port;
+      return fetch(new Request(originUrl.toString(), request));
     }
 
     // 5. Rate Limiting Check
@@ -189,8 +235,7 @@ export default {
     const slug = segments[0];
     const channelTag = segments.length > 1 ? segments[1] : undefined;
 
-    // 7. Cache-First Resolution via Cloudflare KV
-    // Support channel-specific key and fallback to slug key
+    // 7. Cache-First Resolution via Cloudflare KV (BUG_0004)
     const kvChannelKey = channelTag ? `slug:${hostname}:${slug}:${channelTag}` : `slug:${hostname}:${slug}`;
     const kvDefaultKey = `slug:${hostname}:${slug}`;
     let linkRecord: CachedLinkRecord | null = null;
@@ -199,8 +244,7 @@ export default {
       try {
         if (channelTag) {
           linkRecord = await env.LINKS_KV.get(kvChannelKey, { type: "json" });
-        }
-        if (!linkRecord) {
+        } else {
           linkRecord = await env.LINKS_KV.get(kvDefaultKey, { type: "json" });
         }
       } catch {
@@ -208,12 +252,12 @@ export default {
       }
     }
 
-    // SEC_0004: If on custom domain, verify link belongs to custom domain tenant
+    // Enforce tenant isolation on custom domains
     if (customDomain && linkRecord && linkRecord.tenant_id !== customDomain.tenant_id) {
       linkRecord = null;
     }
 
-    // 8. Cache Miss: Query Supabase REST endpoint with Accept-Profile: links (BUG_0003 & SEC_0004)
+    // 8. Cache Miss: Query Supabase REST endpoint (BUG_0003, BUG_0004, ANALYSIS_0001, SEC_0002)
     if (!linkRecord && env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
       try {
         let queryUrl = `${env.SUPABASE_URL}/rest/v1/short_links?slug=eq.${encodeURIComponent(
@@ -223,8 +267,11 @@ export default {
         if (customDomain) {
           queryUrl += `&tenant_id=eq.${encodeURIComponent(customDomain.tenant_id)}`;
         }
+
         if (channelTag) {
           queryUrl += `&channel_tag=eq.${encodeURIComponent(channelTag)}`;
+        } else {
+          queryUrl += `&or=(channel_tag.eq.direct,channel_tag.is.null)`;
         }
 
         const dbRes = await fetch(queryUrl, {
@@ -239,34 +286,12 @@ export default {
           const rows = (await dbRes.json()) as CachedLinkRecord[];
           if (rows && rows.length > 0) {
             linkRecord = rows[0];
-            // Cache record with 300s TTL
             if (env.LINKS_KV) {
               ctx.waitUntil(
-                env.LINKS_KV.put(kvChannelKey, JSON.stringify(linkRecord), {
+                env.LINKS_KV.put(channelTag ? kvChannelKey : kvDefaultKey, JSON.stringify(linkRecord), {
                   expirationTtl: 300,
                 })
               );
-            }
-          } else if (channelTag) {
-            // Fallback query without channel filter
-            let fallbackUrl = `${env.SUPABASE_URL}/rest/v1/short_links?slug=eq.${encodeURIComponent(
-              slug
-            )}&is_active=eq.true&select=id,tenant_id,slug,destination_url,is_active,expires_at,click_limit,password_hash,channel_tag,trust_score,trust_flags&limit=1`;
-            if (customDomain) {
-              fallbackUrl += `&tenant_id=eq.${encodeURIComponent(customDomain.tenant_id)}`;
-            }
-            const fallbackRes = await fetch(fallbackUrl, {
-              headers: {
-                apikey: env.SUPABASE_SERVICE_ROLE_KEY,
-                Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
-                "Accept-Profile": "links",
-              },
-            });
-            if (fallbackRes.ok) {
-              const fallbackRows = (await fallbackRes.json()) as CachedLinkRecord[];
-              if (fallbackRows && fallbackRows.length > 0) {
-                linkRecord = fallbackRows[0];
-              }
             }
           }
         }
@@ -296,23 +321,43 @@ export default {
       });
     }
 
-    // 11. Password Challenge Gate (SEC_0003)
+    // 11. Password Challenge Gate (SEC_0003 & SEC_0004)
+    let unlockedViaPost = false;
     if (linkRecord.password_hash) {
-      const candidate =
-        url.searchParams.get("pass") ||
-        url.searchParams.get("password") ||
-        request.headers.get("x-link-password");
+      const cookieHeader = request.headers.get("cookie") || "";
+      const isUnlockedCookie = cookieHeader.includes(`sunshade_unlocked_${slug}=1`);
 
-      let authorized = false;
-      if (candidate) {
-        const hashedCandidate = await hashPassword(candidate);
-        if (hashedCandidate === linkRecord.password_hash) {
-          authorized = true;
+      let candidate: string | null = null;
+      if (request.method === "POST") {
+        try {
+          const contentType = request.headers.get("content-type") || "";
+          if (contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data")) {
+            const formData = await request.formData();
+            candidate = (formData.get("pass") || formData.get("password")) as string | null;
+          } else if (contentType.includes("application/json")) {
+            const json = (await request.json().catch(() => ({}))) as any;
+            candidate = json?.pass || json?.password;
+          }
+        } catch {
+          // ignore parsing error
+        }
+      } else {
+        candidate =
+          url.searchParams.get("pass") ||
+          url.searchParams.get("password") ||
+          request.headers.get("x-link-password");
+      }
+
+      let authorized = isUnlockedCookie;
+      if (!authorized && candidate) {
+        authorized = await verifyPassword(candidate, linkRecord.password_hash);
+        if (authorized && request.method === "POST") {
+          unlockedViaPost = true;
         }
       }
 
       if (!authorized) {
-        const errorBlock = candidate
+        const errorBlock = ((request.method === "POST" || candidate) && !authorized)
           ? `<div class="error">Incorrect password. Please try again.</div>`
           : "";
         const promptHtml = PASSWORD_GATE_HTML.replace("{{ERROR_BLOCK}}", errorBlock);
@@ -329,14 +374,22 @@ export default {
     if (trustScore < 60 && !bypassWarning) {
       const continueUrl = new URL(request.url);
       continueUrl.searchParams.set("bypass_warning", "1");
+      // Clean password parameters from continueUrl to prevent URL disclosure
+      continueUrl.searchParams.delete("pass");
+      continueUrl.searchParams.delete("password");
 
       const renderedHtml = INTERSTITIAL_HTML.replace("{{TRUST_SCORE}}", escapeHtml(String(trustScore)))
         .replace("{{DESTINATION_URL}}", escapeHtml(linkRecord.destination_url))
         .replace("{{CONTINUE_URL}}", escapeHtml(continueUrl.toString()));
 
+      const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
+      if (unlockedViaPost) {
+        headers.set("Set-Cookie", `sunshade_unlocked_${slug}=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=300`);
+      }
+
       return new Response(renderedHtml, {
         status: 200,
-        headers: { "Content-Type": "text/html; charset=utf-8" },
+        headers,
       });
     }
 
@@ -367,8 +420,17 @@ export default {
       ctx.waitUntil(env.TELEMETRY_QUEUE.send(telemetry));
     }
 
-    // 15. Dispatch HTTP 302 Redirect
-    return Response.redirect(destObj.toString(), 302);
+    // 15. Dispatch HTTP 302/303 Redirect
+    const redirectHeaders = new Headers();
+    redirectHeaders.set("Location", destObj.toString());
+    if (unlockedViaPost) {
+      redirectHeaders.set("Set-Cookie", `sunshade_unlocked_${slug}=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=300`);
+    }
+
+    return new Response(null, {
+      status: request.method === "POST" ? 303 : 302,
+      headers: redirectHeaders,
+    });
   },
 
   /**

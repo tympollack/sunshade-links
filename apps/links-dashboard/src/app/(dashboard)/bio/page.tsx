@@ -8,6 +8,7 @@ import {
   BioLinkItem,
   getBioProfile,
   saveBioProfile,
+  saveBioProfileAsync,
 } from "@/lib/bioStore";
 import {
   Plus,
@@ -31,13 +32,20 @@ export default function BioBuilderPage() {
     setProfile(getBioProfile("tymz"));
   }, []);
 
-  const handleSave = () => {
-    const res = saveBioProfile(profile);
-    if (res.success) {
-      setSavedSuccess(true);
-      setTimeout(() => setSavedSuccess(false), 3000);
-    } else {
-      alert(res.error || "Failed to save profile");
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const res = await saveBioProfileAsync(profile);
+      if (res.success) {
+        setSavedSuccess(true);
+        setTimeout(() => setSavedSuccess(false), 3000);
+      } else {
+        alert(res.error || "Failed to save profile");
+      }
+    } finally {
+      setSaving(false);
     }
   };
 
