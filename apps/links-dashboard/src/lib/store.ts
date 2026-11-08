@@ -139,6 +139,27 @@ export function saveChannelsForSlug(
   return { success: true };
 }
 
+export async function syncChannelToServer(
+  slug: string,
+  channel: ChannelData
+): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  try {
+    const res = await fetch("/api/v1/links", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slug,
+        channel_tag: channel.channel,
+        destination_url: channel.destination,
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export function addChannelForSlug(
   slug: string,
   newChannel: ChannelData

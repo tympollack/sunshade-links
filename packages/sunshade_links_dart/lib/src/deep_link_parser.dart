@@ -73,6 +73,7 @@ class SunshadeDeepLinkParser {
   static const Set<String> validHosts = {
     'links.sunshade.icu',
     'links-stag.sunshade.icu',
+    'staging-links.sunshade.icu',
     'staging.links.sunshade.icu',
   };
 

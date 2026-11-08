@@ -142,9 +142,132 @@ describe("Worker Fetch Handler", () => {
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("https://untrusted-site.com/");
   });
+
+  it("escapes malicious destination URLs in interstitial warning (SEC_0005)", async () => {
+    const maliciousRecord: CachedLinkRecord = {
+      id: "lnk_malicious",
+      tenant_id: "ten_1",
+      slug: "xss",
+      destination_url: 'https://evil.com/"<script>alert(1)</script>',
+      is_active: true,
+      trust_score: 25,
+    };
+
+    (mockEnv.LINKS_KV.get as any).mockResolvedValue(maliciousRecord);
+
+    const req = new Request("https://links.sunshade.icu/xss");
+    const res = await worker.fetch(req, mockEnv, mockCtx);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
+  it("strips incoming surveillance tokens like fbclid and gclid (SEC_0006)", async () => {
+    const cachedRecord: CachedLinkRecord = {
+      id: "lnk_clean",
+      tenant_id: "ten_1",
+      slug: "clean-test",
+      destination_url: "https://target.com/page",
+      is_active: true,
+      trust_score: 95,
+    };
+
+    (mockEnv.LINKS_KV.get as any).mockResolvedValue(cachedRecord);
+
+    const req = new Request("https://links.sunshade.icu/clean-test?fbclid=incoming123&gclid=ads456&user_param=safe");
+    const res = await worker.fetch(req, mockEnv, mockCtx);
+    expect(res.status).toBe(302);
+    const loc = res.headers.get("location");
+    expect(loc).toContain("user_param=safe");
+    expect(loc).not.toContain("fbclid");
+    expect(loc).not.toContain("gclid");
+  });
+
+  it("challenges password-protected links with 401 until valid password provided (SEC_0003)", async () => {
+    // "secret123" SHA-256
+    const passwordHash = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
+    const protectedRecord: CachedLinkRecord = {
+      id: "lnk_protected",
+      tenant_id: "ten_1",
+      slug: "secret",
+      destination_url: "https://target.com/vault",
+      is_active: true,
+      password_hash: passwordHash,
+      trust_score: 90,
+    };
+
+    (mockEnv.LINKS_KV.get as any).mockResolvedValue(protectedRecord);
+
+    // 1. No password -> 401
+    const req1 = new Request("https://links.sunshade.icu/secret");
+    const res1 = await worker.fetch(req1, mockEnv, mockCtx);
+    expect(res1.status).toBe(401);
+
+    // 2. Wrong password -> 401 with error
+    const req2 = new Request("https://links.sunshade.icu/secret?pass=wrong");
+    const res2 = await worker.fetch(req2, mockEnv, mockCtx);
+    expect(res2.status).toBe(401);
+    const html = await res2.text();
+    expect(html).toContain("Incorrect password");
+
+    // 3. Correct password -> 302
+    const req3 = new Request("https://links.sunshade.icu/secret?pass=123");
+    const res3 = await worker.fetch(req3, mockEnv, mockCtx);
+    expect(res3.status).toBe(302);
+    expect(res3.headers.get("location")).toBe("https://target.com/vault");
+  });
+
+  it("reserves dashboard routes and does not treat them as shortlinks (BUG_0002)", async () => {
+    const req1 = new Request("https://links.sunshade.icu/links");
+    const res1 = await worker.fetch(req1, mockEnv, mockCtx);
+    expect(res1.status).toBe(404);
+    expect(await res1.text()).toBe("Reserved dashboard route");
+    expect(mockEnv.LINKS_KV.get).not.toHaveBeenCalled();
+
+    const req2 = new Request("https://links.sunshade.icu/api/v1/links");
+    const res2 = await worker.fetch(req2, mockEnv, mockCtx);
+    expect(res2.status).toBe(404);
+  });
 });
 
 describe("Worker Queue Handler", () => {
+  it("retries batch when Supabase credentials are missing (BUG_0008)", async () => {
+    const mockBatch = {
+      messages: [{ id: "m-1", body: {} }],
+      ackAll: vi.fn(),
+      retryAll: vi.fn(),
+    };
+    const incompleteEnv: Env = {
+      LINKS_KV: {} as any,
+      TELEMETRY_QUEUE: {} as any,
+      RATE_LIMITER: {} as any,
+    };
+
+    await worker.queue(mockBatch as any, incompleteEnv);
+    expect(mockBatch.retryAll).toHaveBeenCalled();
+    expect(mockBatch.ackAll).not.toHaveBeenCalled();
+  });
+
+  it("retries batch on Supabase RPC failure (BUG_0008)", async () => {
+    const mockBatch = {
+      messages: [{ id: "m-1", body: {} }],
+      ackAll: vi.fn(),
+      retryAll: vi.fn(),
+    };
+    global.fetch = vi.fn().mockResolvedValue(new Response("Internal Server Error", { status: 500 }));
+    const mockEnv: Env = {
+      LINKS_KV: {} as any,
+      TELEMETRY_QUEUE: {} as any,
+      RATE_LIMITER: {} as any,
+      SUPABASE_URL: "https://mock.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "mock-key",
+    };
+
+    await worker.queue(mockBatch as any, mockEnv);
+    expect(mockBatch.retryAll).toHaveBeenCalled();
+    expect(mockBatch.ackAll).not.toHaveBeenCalled();
+  });
   it("ingests click telemetry batch into Supabase RPC", async () => {
     const mockBatch = {
       messages: [

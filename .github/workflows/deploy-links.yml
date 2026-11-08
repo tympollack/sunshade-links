@@ -102,7 +102,13 @@ jobs:
           command: deploy --env ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
         continue-on-error: true
 
-      - name: Build and Deploy Dashboard
-        run: |
-          npm run build --workspace=@sunshade/links-dashboard
-          echo "Next.js 16 links-dashboard successfully bundled for production edge hosting."
+      - name: Build Dashboard
+        run: npm run build --workspace=@sunshade/links-dashboard
+
+      - name: Deploy Dashboard to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: apps/links-dashboard
+          command: pages deploy .next --project-name=sunshade-links-dashboard --branch=${{ github.ref_name }}
+        continue-on-error: true

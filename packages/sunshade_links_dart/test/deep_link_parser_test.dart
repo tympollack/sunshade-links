@@ -53,6 +53,12 @@ void main() {
       expect(generic.channel, isNull);
     });
 
+    test('parses staging-links.sunshade.icu links', () {
+      final link = SunshadeDeepLinkParser.parse('https://staging-links.sunshade.icu/pw/node-99');
+      expect(link, isA<PatchworkNodeDeepLink>());
+      expect((link as PatchworkNodeDeepLink).nodeId, equals('node-99'));
+    });
+
     test('rejects untrusted schemes like ftp or file', () {
       final ftpLink = SunshadeDeepLinkParser.parse('ftp://links.sunshade.icu/pw/node-1');
       expect(ftpLink, isA<UnrecognizedDeepLink>());

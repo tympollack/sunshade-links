@@ -93,25 +93,41 @@ export const DEFAULT_BIO_PROFILES: Record<string, BioProfile> = {
 
 const STORAGE_BIO_PREFIX = "sunshade_bio_";
 
+// Shared server-side / in-memory store so public server-rendered pages reflect saved edits (BUG_0006)
+const sharedServerBioProfiles = new Map<string, BioProfile>();
+
+export function resetBioStore(): void {
+  sharedServerBioProfiles.clear();
+}
+
 export function getBioProfile(username: string): BioProfile {
   const cleanUsername = username.toLowerCase().replace(/^@/, "");
 
+  // 1. Check shared server/memory store first
+  if (sharedServerBioProfiles.has(cleanUsername)) {
+    return JSON.parse(JSON.stringify(sharedServerBioProfiles.get(cleanUsername)!));
+  }
+
+  // 2. Check browser localStorage if running in client
   if (typeof window !== "undefined") {
     try {
       const stored = window.localStorage.getItem(`${STORAGE_BIO_PREFIX}${cleanUsername}`);
       if (stored) {
-        return JSON.parse(stored) as BioProfile;
+        const parsed = JSON.parse(stored) as BioProfile;
+        sharedServerBioProfiles.set(cleanUsername, parsed);
+        return parsed;
       }
     } catch {
       // LocalStorage access fallback
     }
   }
 
+  // 3. Built-in defaults
   if (DEFAULT_BIO_PROFILES[cleanUsername]) {
-    return DEFAULT_BIO_PROFILES[cleanUsername];
+    return JSON.parse(JSON.stringify(DEFAULT_BIO_PROFILES[cleanUsername]));
   }
 
-  // Fallback profile template for any new handle
+  // 4. Fallback profile template for any new handle
   return {
     username: cleanUsername,
     displayName: `@${cleanUsername}`,
@@ -134,13 +150,29 @@ export function getBioProfile(username: string): BioProfile {
 
 export function saveBioProfile(profile: BioProfile): { success: boolean; error?: string } {
   const cleanUsername = profile.username.toLowerCase().replace(/^@/, "");
+  const copy: BioProfile = JSON.parse(JSON.stringify(profile));
+
+  // Update shared server-side/in-memory store immediately
+  sharedServerBioProfiles.set(cleanUsername, copy);
+
   if (typeof window !== "undefined") {
     try {
-      window.localStorage.setItem(`${STORAGE_BIO_PREFIX}${cleanUsername}`, JSON.stringify(profile));
-      return { success: true };
+      window.localStorage.setItem(`${STORAGE_BIO_PREFIX}${cleanUsername}`, JSON.stringify(copy));
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : "Storage error" };
     }
+
+    // Non-blocking sync to server endpoint
+    try {
+      fetch(`/api/v1/bio/${cleanUsername}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(copy),
+      }).catch(() => {});
+    } catch {
+      // Ignore background sync errors
+    }
   }
+
   return { success: true };
 }

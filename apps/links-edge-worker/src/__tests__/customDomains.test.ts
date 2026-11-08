@@ -29,6 +29,30 @@ describe("resolveCustomDomain", () => {
     expect(result).not.toBeNull();
     expect(result?.tenant_id).toBe("tenant-123");
   });
+
+  it("returns null for deactivated or non-active SSL custom domains", async () => {
+    const mockKv = {
+      get: vi.fn(),
+    } as any;
+
+    // Deactivated domain
+    mockKv.get.mockResolvedValueOnce({
+      hostname: "inactive.brand.com",
+      tenant_id: "tenant-123",
+      ssl_status: "active",
+      is_active: false,
+    });
+    expect(await resolveCustomDomain("inactive.brand.com", mockKv)).toBeNull();
+
+    // Pending SSL status
+    mockKv.get.mockResolvedValueOnce({
+      hostname: "pending.brand.com",
+      tenant_id: "tenant-123",
+      ssl_status: "pending",
+      is_active: true,
+    });
+    expect(await resolveCustomDomain("pending.brand.com", mockKv)).toBeNull();
+  });
 });
 
 describe("registerCustomHostname", () => {

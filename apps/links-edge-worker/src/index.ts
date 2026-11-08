@@ -6,7 +6,7 @@
 
 import { checkRateLimit, RateLimiterBinding } from "./middleware/rateLimiter";
 import { extractTelemetryEvent, TelemetryPayload } from "./lib/telemetry";
-import { sanitizeDestinationUrl } from "./lib/sanitizeQuery";
+import { sanitizeDestinationUrl, INVASIVE_TRACKERS } from "./lib/sanitizeQuery";
 import { resolveCustomDomain } from "./services/customDomains";
 import { handleWorkerHealthCheck } from "./routes/health";
 
@@ -16,6 +16,7 @@ export interface Env {
   RATE_LIMITER: RateLimiterBinding;
   SUPABASE_URL?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
+  DASHBOARD_ORIGIN?: string;
 }
 
 export interface CachedLinkRecord {
@@ -33,6 +34,35 @@ export interface CachedLinkRecord {
 }
 
 const WORKER_START_TIME = Date.now();
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function hashPassword(candidate: string): Promise<string> {
+  const enc = new TextEncoder().encode(candidate);
+  const digest = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export function isReservedDashboardRoute(pathname: string): boolean {
+  return (
+    pathname.startsWith("/_next") ||
+    pathname.startsWith("/api") ||
+    pathname === "/links" ||
+    pathname.startsWith("/links/") ||
+    pathname === "/bio" ||
+    pathname.startsWith("/bio/") ||
+    pathname.startsWith("/@")
+  );
+}
 
 // Embedded interstitial HTML template
 const INTERSTITIAL_HTML = `<!DOCTYPE html>
@@ -68,6 +98,36 @@ const INTERSTITIAL_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
+const PASSWORD_GATE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Password Protected Link — SunShade</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background-color: #020617; color: #F8FAFC; font-family: -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1.5rem; }
+    .card { background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 1rem; max-width: 440px; width: 100%; padding: 2rem; }
+    h1 { font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem; color: #FFFFFF; }
+    p { color: #94A3B8; font-size: 0.875rem; margin-bottom: 1.5rem; line-height: 1.4; }
+    input { width: 100%; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #334155; background: #020617; color: #FFFFFF; font-size: 0.95rem; margin-bottom: 1rem; }
+    button { width: 100%; padding: 0.75rem; border-radius: 0.5rem; background: #F59E0B; color: #020617; font-weight: 600; border: none; cursor: pointer; }
+    .error { color: #F87171; font-size: 0.8rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Password Protected</h1>
+    <p>This SunShade shortlink is password protected. Enter the passphrase to continue to destination.</p>
+    {{ERROR_BLOCK}}
+    <form method="GET">
+      <input type="password" name="pass" placeholder="Enter password" autofocus required />
+      <button type="submit">Unlock & Continue</button>
+    </form>
+  </div>
+</body>
+</html>`;
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -91,7 +151,20 @@ export default {
       return Response.redirect(`https://links.sunshade.icu/@${customDomain.tenant_id}`, 302);
     }
 
-    // 4. Rate Limiting Check
+    // 4. Reserved Dashboard & API Routes (Partition from shortlink resolver)
+    if (isReservedDashboardRoute(pathname)) {
+      if (env.DASHBOARD_ORIGIN) {
+        const originUrl = new URL(request.url);
+        const target = new URL(env.DASHBOARD_ORIGIN);
+        originUrl.protocol = target.protocol;
+        originUrl.host = target.host;
+        originUrl.port = target.port;
+        return fetch(new Request(originUrl.toString(), request));
+      }
+      return new Response("Reserved dashboard route", { status: 404 });
+    }
+
+    // 5. Rate Limiting Check
     const clientIp = request.headers.get("cf-connecting-ip") || "127.0.0.1";
     const rateCheck = await checkRateLimit({
       clientIp,
@@ -107,7 +180,7 @@ export default {
       });
     }
 
-    // 5. Slug Parsing: GET /:slug or GET /:slug/:channel
+    // 6. Slug Parsing: GET /:slug or GET /:slug/:channel
     const segments = pathname.split("/").filter(Boolean);
     if (segments.length === 0) {
       return Response.redirect("https://sunshade.icu", 302);
@@ -116,29 +189,49 @@ export default {
     const slug = segments[0];
     const channelTag = segments.length > 1 ? segments[1] : undefined;
 
-    // 6. Cache-First Resolution via Cloudflare KV
-    const kvKey = `slug:${hostname}:${slug}`;
+    // 7. Cache-First Resolution via Cloudflare KV
+    // Support channel-specific key and fallback to slug key
+    const kvChannelKey = channelTag ? `slug:${hostname}:${slug}:${channelTag}` : `slug:${hostname}:${slug}`;
+    const kvDefaultKey = `slug:${hostname}:${slug}`;
     let linkRecord: CachedLinkRecord | null = null;
 
     if (env.LINKS_KV) {
       try {
-        linkRecord = await env.LINKS_KV.get(kvKey, { type: "json" });
+        if (channelTag) {
+          linkRecord = await env.LINKS_KV.get(kvChannelKey, { type: "json" });
+        }
+        if (!linkRecord) {
+          linkRecord = await env.LINKS_KV.get(kvDefaultKey, { type: "json" });
+        }
       } catch {
         // KV read failure fallback to database
       }
     }
 
-    // 7. Cache Miss: Query Supabase REST endpoint
+    // SEC_0004: If on custom domain, verify link belongs to custom domain tenant
+    if (customDomain && linkRecord && linkRecord.tenant_id !== customDomain.tenant_id) {
+      linkRecord = null;
+    }
+
+    // 8. Cache Miss: Query Supabase REST endpoint with Accept-Profile: links (BUG_0003 & SEC_0004)
     if (!linkRecord && env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
       try {
-        const queryUrl = `${env.SUPABASE_URL}/rest/v1/short_links?slug=eq.${encodeURIComponent(
+        let queryUrl = `${env.SUPABASE_URL}/rest/v1/short_links?slug=eq.${encodeURIComponent(
           slug
         )}&is_active=eq.true&select=id,tenant_id,slug,destination_url,is_active,expires_at,click_limit,password_hash,channel_tag,trust_score,trust_flags&limit=1`;
+
+        if (customDomain) {
+          queryUrl += `&tenant_id=eq.${encodeURIComponent(customDomain.tenant_id)}`;
+        }
+        if (channelTag) {
+          queryUrl += `&channel_tag=eq.${encodeURIComponent(channelTag)}`;
+        }
 
         const dbRes = await fetch(queryUrl, {
           headers: {
             apikey: env.SUPABASE_SERVICE_ROLE_KEY,
             Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+            "Accept-Profile": "links",
           },
         });
 
@@ -149,10 +242,31 @@ export default {
             // Cache record with 300s TTL
             if (env.LINKS_KV) {
               ctx.waitUntil(
-                env.LINKS_KV.put(kvKey, JSON.stringify(linkRecord), {
+                env.LINKS_KV.put(kvChannelKey, JSON.stringify(linkRecord), {
                   expirationTtl: 300,
                 })
               );
+            }
+          } else if (channelTag) {
+            // Fallback query without channel filter
+            let fallbackUrl = `${env.SUPABASE_URL}/rest/v1/short_links?slug=eq.${encodeURIComponent(
+              slug
+            )}&is_active=eq.true&select=id,tenant_id,slug,destination_url,is_active,expires_at,click_limit,password_hash,channel_tag,trust_score,trust_flags&limit=1`;
+            if (customDomain) {
+              fallbackUrl += `&tenant_id=eq.${encodeURIComponent(customDomain.tenant_id)}`;
+            }
+            const fallbackRes = await fetch(fallbackUrl, {
+              headers: {
+                apikey: env.SUPABASE_SERVICE_ROLE_KEY,
+                Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+                "Accept-Profile": "links",
+              },
+            });
+            if (fallbackRes.ok) {
+              const fallbackRows = (await fallbackRes.json()) as CachedLinkRecord[];
+              if (fallbackRows && fallbackRows.length > 0) {
+                linkRecord = fallbackRows[0];
+              }
             }
           }
         }
@@ -161,7 +275,12 @@ export default {
       }
     }
 
-    // 8. 404 Not Found
+    // Double-check custom domain isolation
+    if (customDomain && linkRecord && linkRecord.tenant_id !== customDomain.tenant_id) {
+      linkRecord = null;
+    }
+
+    // 9. 404 Not Found
     if (!linkRecord || !linkRecord.is_active) {
       return new Response("Link not found or deactivated", {
         status: 404,
@@ -169,7 +288,7 @@ export default {
       });
     }
 
-    // 9. Expiry & Click Limit Check
+    // 10. Expiry & Click Limit Check
     if (linkRecord.expires_at && new Date(linkRecord.expires_at) < new Date()) {
       return new Response("Link Expired (410 Gone)", {
         status: 410,
@@ -177,16 +296,43 @@ export default {
       });
     }
 
-    // 10. Interstitial Warning Gate for Degraded Links (<60/100)
+    // 11. Password Challenge Gate (SEC_0003)
+    if (linkRecord.password_hash) {
+      const candidate =
+        url.searchParams.get("pass") ||
+        url.searchParams.get("password") ||
+        request.headers.get("x-link-password");
+
+      let authorized = false;
+      if (candidate) {
+        const hashedCandidate = await hashPassword(candidate);
+        if (hashedCandidate === linkRecord.password_hash) {
+          authorized = true;
+        }
+      }
+
+      if (!authorized) {
+        const errorBlock = candidate
+          ? `<div class="error">Incorrect password. Please try again.</div>`
+          : "";
+        const promptHtml = PASSWORD_GATE_HTML.replace("{{ERROR_BLOCK}}", errorBlock);
+        return new Response(promptHtml, {
+          status: 401,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+    }
+
+    // 12. Interstitial Warning Gate for Degraded Links (<60/100) (SEC_0005)
     const trustScore = linkRecord.trust_score ?? 100;
     const bypassWarning = url.searchParams.get("bypass_warning") === "1";
     if (trustScore < 60 && !bypassWarning) {
       const continueUrl = new URL(request.url);
       continueUrl.searchParams.set("bypass_warning", "1");
 
-      const renderedHtml = INTERSTITIAL_HTML.replace("{{TRUST_SCORE}}", String(trustScore))
-        .replace("{{DESTINATION_URL}}", linkRecord.destination_url)
-        .replace("{{CONTINUE_URL}}", continueUrl.toString());
+      const renderedHtml = INTERSTITIAL_HTML.replace("{{TRUST_SCORE}}", escapeHtml(String(trustScore)))
+        .replace("{{DESTINATION_URL}}", escapeHtml(linkRecord.destination_url))
+        .replace("{{CONTINUE_URL}}", escapeHtml(continueUrl.toString()));
 
       return new Response(renderedHtml, {
         status: 200,
@@ -194,13 +340,19 @@ export default {
       });
     }
 
-    // 11. Surveillance Stripping & Destination URL Construction
+    // 13. Surveillance Stripping & Destination URL Construction (SEC_0006)
     const { cleanUrl } = sanitizeDestinationUrl(linkRecord.destination_url);
     const destObj = new URL(cleanUrl);
 
-    // Merge incoming query parameters (preserving channel UTMs)
+    // Merge incoming query parameters while purging surveillance trackers and internal params
     url.searchParams.forEach((val, key) => {
-      if (key !== "bypass_warning") {
+      const lower = key.toLowerCase();
+      if (
+        key !== "bypass_warning" &&
+        key !== "pass" &&
+        key !== "password" &&
+        !INVASIVE_TRACKERS.has(lower)
+      ) {
         destObj.searchParams.set(key, val);
       }
     });
@@ -209,13 +361,13 @@ export default {
       destObj.searchParams.set("channel", channelTag);
     }
 
-    // 12. Non-blocking Telemetry Enqueue
+    // 14. Non-blocking Telemetry Enqueue
     if (env.TELEMETRY_QUEUE) {
       const telemetry = extractTelemetryEvent(request, linkRecord.id, linkRecord.tenant_id);
       ctx.waitUntil(env.TELEMETRY_QUEUE.send(telemetry));
     }
 
-    // 13. Dispatch HTTP 302 Redirect
+    // 15. Dispatch HTTP 302 Redirect
     return Response.redirect(destObj.toString(), 302);
   },
 
@@ -225,8 +377,8 @@ export default {
    */
   async queue(batch: MessageBatch<TelemetryPayload>, env: Env): Promise<void> {
     if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
-      console.warn("Queue consumer missing Supabase credentials; acknowledging batch.");
-      batch.ackAll();
+      console.warn("Queue consumer missing Supabase credentials; retrying batch.");
+      batch.retryAll();
       return;
     }
 
@@ -243,18 +395,17 @@ export default {
         headers: {
           apikey: env.SUPABASE_SERVICE_ROLE_KEY,
           Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+          "Content-Profile": "links",
+          "Accept-Profile": "links",
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ payload: events }),
       });
 
       if (!res.ok) {
-        if (res.status >= 500) {
-          // Retry batch on server errors
-          batch.retryAll();
-          return;
-        }
-        console.error("Non-retryable ingestion error from Supabase RPC:", res.status);
+        console.error(`Telemetry ingestion RPC failed with status ${res.status}`);
+        batch.retryAll();
+        return;
       }
 
       batch.ackAll();

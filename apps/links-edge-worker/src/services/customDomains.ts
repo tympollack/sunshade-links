@@ -77,7 +77,11 @@ export async function resolveCustomDomain(
   try {
     const raw = await kv.get(`domain:${cleanHost}`, { type: "json" });
     if (!raw) return null;
-    return raw as CustomDomainConfig;
+    const config = raw as CustomDomainConfig;
+    if (!config.is_active || config.ssl_status !== "active") {
+      return null;
+    }
+    return config;
   } catch {
     return null;
   }

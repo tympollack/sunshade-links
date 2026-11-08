@@ -20,6 +20,9 @@
     "paths": {
       "@/*": [
         "./src/*"
+      ],
+      "@sunshade/htn-trust-engine": [
+        "../../packages/htn-trust-engine/src/index.ts"
       ]
     },
     "plugins": [

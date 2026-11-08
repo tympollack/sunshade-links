@@ -10,6 +10,7 @@ import {
   getChannelsForSlug,
   addChannelForSlug,
   deleteChannelForSlug,
+  syncChannelToServer,
 } from "@/lib/store";
 
 interface PageProps {
@@ -48,18 +49,59 @@ export default function LinkChannelsPage({ params }: PageProps) {
   const [newDestination, setNewDestination] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Load persisted channels after mount to ensure seamless hydration
+  // Load persisted channels after mount to ensure seamless hydration and sync with backend
   useEffect(() => {
     setChannels(getChannelsForSlug(slug));
+
+    // Fetch server-persisted channels for this slug
+    fetch(`/api/v1/links?search=${encodeURIComponent(slug)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (json?.success && Array.isArray(json.data) && json.data.length > 0) {
+          const serverChannels: ChannelData[] = json.data
+            .filter((item: any) => item.slug === slug)
+            .map((item: any) => ({
+              id: item.id,
+              slug: item.slug,
+              channel: item.channel_tag || "direct",
+              destination: item.destination_url,
+              clicks: item.clicks || 0,
+              telemetryCounts: [0, 0, 0, 0],
+              trustScore: item.trust_score ?? 100,
+            }));
+
+          if (serverChannels.length > 0) {
+            const merged = [...getChannelsForSlug(slug)];
+            for (const sc of serverChannels) {
+              const idx = merged.findIndex((c) => c.channel === sc.channel);
+              if (idx >= 0) {
+                merged[idx] = { ...merged[idx], destination: sc.destination, trustScore: sc.trustScore };
+              } else {
+                merged.push(sc);
+              }
+            }
+            setChannels(merged);
+          }
+        }
+      })
+      .catch(() => {});
   }, [slug]);
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     const res = deleteChannelForSlug(slug, id);
     if (!res.success) {
       alert(res.error || "Failed to delete channel.");
       return;
     }
     setChannels(getChannelsForSlug(slug));
+
+    if (id && !id.startsWith("ch-")) {
+      try {
+        await fetch(`/api/v1/links/${id}`, { method: "DELETE" });
+      } catch {
+        // Ignore network delete error
+      }
+    }
   };
 
   const handleOpenQr = (channel: ChannelData) => {
@@ -138,6 +180,9 @@ export default function LinkChannelsPage({ params }: PageProps) {
       setFormError(result.error ?? "Failed to add channel.");
       return;
     }
+
+    // Persist channel to backend API so Worker and DB resolve the new channel destination (BUG_0004)
+    syncChannelToServer(slug, newChannelItem).catch(() => {});
 
     setChannels(getChannelsForSlug(slug));
     setCreateModalOpen(false);
@@ -342,13 +387,20 @@ export default function LinkChannelsPage({ params }: PageProps) {
               </button>
             </div>
 
-            <div className="p-4 bg-white rounded-lg flex items-center justify-center">
-              <div className="w-48 h-48 border-2 border-slate-900 flex flex-col items-center justify-center text-slate-900 text-xs font-mono text-center p-2">
-                <span className="font-bold">SUNSHADE LINK</span>
-                <span className="text-[10px] break-all mt-2">
-                  {formatVanityUrl(selectedChannel.slug, selectedChannel.channel)}
-                </span>
-              </div>
+            <div className="p-4 bg-white rounded-lg flex flex-col items-center justify-center space-y-3">
+              <img
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(
+                  formatVanityUrl(selectedChannel.slug, selectedChannel.channel)
+                )}`}
+                alt={`Scannable QR code for ${formatVanityUrl(selectedChannel.slug, selectedChannel.channel)}`}
+                width={180}
+                height={180}
+                className="w-44 h-44 rounded"
+                loading="lazy"
+              />
+              <span className="text-[11px] font-mono text-slate-700 break-all text-center max-w-[200px]">
+                {formatVanityUrl(selectedChannel.slug, selectedChannel.channel)}
+              </span>
             </div>
 
             <p className="text-xs text-slate-400 font-mono text-center">

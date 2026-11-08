@@ -182,8 +182,43 @@ export async function executeDnsProvisioning(
       body: JSON.stringify({ value: plan.sslSettings.min_tls_version }),
     });
     if (tlsResp.ok) applied++;
+
+    const sslModeResp = await fetchFn(`https://api.cloudflare.com/client/v4/zones/${zoneId}/settings/ssl`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ value: plan.sslSettings.ssl }),
+    });
+    if (sslModeResp.ok) applied++;
+
+    if (plan.sslSettings.security_header) {
+      const hstsResp = await fetchFn(`https://api.cloudflare.com/client/v4/zones/${zoneId}/settings/security_header`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ value: plan.sslSettings.security_header }),
+      });
+      if (hstsResp.ok) applied++;
+    }
   } catch (err: unknown) {
     errors.push(`SSL settings update error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 3. Configure Page Rules
+  for (const rule of plan.pageRules) {
+    try {
+      const ruleResp = await fetchFn(`https://api.cloudflare.com/client/v4/zones/${zoneId}/pagerules`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(rule),
+      });
+      if (ruleResp.ok) {
+        applied++;
+      } else {
+        const body = (await ruleResp.json().catch(() => ({}))) as { errors?: Array<{ message: string }> };
+        errors.push(`Page rule failed: ${body.errors?.[0]?.message || ruleResp.statusText}`);
+      }
+    } catch (err: unknown) {
+      errors.push(`Page rule error: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   return {

@@ -83,6 +83,13 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const auth = await authenticateRequest(request);
+    if (auth.role !== "admin" && auth.role !== "service_role") {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: insufficient permissions to create links" },
+        { status: 403 }
+      );
+    }
+
     const body = await request.json();
 
     const parseResult = CreateLinkSchema.safeParse(body);
@@ -98,20 +105,22 @@ export async function POST(request: NextRequest) {
     }
 
     const payload = parseResult.data;
+    const channelTag = payload.channel_tag || "direct";
     const supabase = getServiceSupabase();
 
-    // Check for unique slug per tenant
+    // Check for unique (slug, channel_tag) tuple per tenant
     const { data: existing } = await supabase
       .schema("links" as any)
       .from("short_links")
       .select("id")
       .eq("tenant_id", auth.tenantId)
       .eq("slug", payload.slug)
+      .eq("channel_tag", channelTag)
       .single();
 
     if (existing) {
       return NextResponse.json(
-        { success: false, error: `Slug '/${payload.slug}' already exists for this tenant.` },
+        { success: false, error: `Channel '${channelTag}' for slug '/${payload.slug}' already exists for this tenant.` },
         { status: 409 }
       );
     }
