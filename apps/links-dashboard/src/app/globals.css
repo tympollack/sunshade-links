@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+:root {
+  --color-burnt-orange: #f59e0b;
+  --color-charcoal: #090d16;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
