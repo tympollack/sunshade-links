@@ -108,6 +108,28 @@ describe("Links API Endpoints", () => {
       expect(json.error).toContain("already exists");
     });
 
+    it("rejects non-admin/non-service_role member credentials with 403", async () => {
+      vi.spyOn(authGuard, "authenticateRequest").mockResolvedValue({
+        tenantId: "ten_test",
+        userId: "usr_member",
+        role: "member",
+        authType: "jwt",
+      });
+
+      const req = new NextRequest("https://links.sunshade.icu/api/v1/links", {
+        method: "POST",
+        body: JSON.stringify({
+          slug: "member-forbidden",
+          destination_url: "https://example.com",
+        }),
+      });
+
+      const res = await createLink(req);
+      expect(res.status).toBe(403);
+      const json = await res.json();
+      expect(json.error).toContain("Forbidden");
+    });
+
     it("creates link successfully (201)", async () => {
       vi.spyOn(authGuard, "authenticateRequest").mockResolvedValue({
         tenantId: "ten_test",

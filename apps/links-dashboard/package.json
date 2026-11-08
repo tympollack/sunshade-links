@@ -11,10 +11,13 @@
   },
   "dependencies": {
     "@digitalcanopy/links": "^1.0.0",
+    "@sunshade/htn-trust-engine": "*",
     "@supabase/supabase-js": "^2.49.1",
+    "@types/qrcode": "^1.5.6",
     "clsx": "^2.1.1",
     "lucide-react": "^1.33.0",
     "next": "16.3.8",
+    "qrcode": "^1.5.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "tailwind-merge": "^3.6.0",

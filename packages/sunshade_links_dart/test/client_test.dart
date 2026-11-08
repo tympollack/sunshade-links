@@ -36,6 +36,77 @@ void main() {
       expect(result, equals('https://links.sunshade.icu/civic/bsky'));
     });
 
+    test('creates shortlink with nested data payload and auto-generated slug', () async {
+      final mockClient = MockClient((request) async {
+        final payload = jsonDecode(request.body);
+        expect(payload['destination_url'], equals('https://example.com/target'));
+        expect(payload['channel_tag'], equals('mastodon'));
+        expect(payload['slug'], isNotEmpty);
+
+        return http.Response(
+          jsonEncode({
+            'success': true,
+            'data': {
+              'id': 'lnk_123',
+              'slug': payload['slug'],
+              'destination_url': 'https://example.com/target',
+            },
+          }),
+          201,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+
+      final client = SunshadeLinksClient(
+        baseUrl: 'https://links.sunshade.icu',
+        httpClient: mockClient,
+      );
+
+      final result = await client.createShortLink(
+        destination: 'https://example.com/target',
+        channel: 'mastodon',
+      );
+
+      expect(result, startsWith('https://links.sunshade.icu/'));
+      expect(result, endsWith('/mastodon'));
+    });
+
+    test('generates collision-free slugs on rapid consecutive calls (ANALYSIS_0007)', () async {
+      final slugs = <String>[];
+      final mockClient = MockClient((request) async {
+        final payload = jsonDecode(request.body) as Map<String, dynamic>;
+        final slug = payload['slug'] as String;
+        slugs.add(slug);
+        return http.Response(
+          jsonEncode({
+            'success': true,
+            'data': {
+              'id': 'lnk_$slug',
+              'slug': slug,
+              'destination_url': payload['destination_url'],
+            },
+          }),
+          201,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+
+      final client = SunshadeLinksClient(
+        baseUrl: 'https://links.sunshade.icu',
+        httpClient: mockClient,
+      );
+
+      for (var i = 0; i < 20; i++) {
+        await client.createShortLink(
+          destination: 'https://example.com/target',
+          channel: 'rapid',
+        );
+      }
+
+      expect(slugs.length, equals(20));
+      expect(slugs.toSet().length, equals(20), reason: 'Every auto-generated slug must be distinct');
+    });
+
     test('gracefully falls back to raw URL on server error (500)', () async {
       final mockClient = MockClient((request) async {
         return http.Response('Internal Server Error', 500);

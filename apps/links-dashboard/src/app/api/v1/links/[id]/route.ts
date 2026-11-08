@@ -58,6 +58,12 @@ export async function GET(request: NextRequest, context: RouteContext) {
 export async function PATCH(request: NextRequest, context: RouteContext) {
   try {
     const auth = await authenticateRequest(request);
+    if (auth.role !== "admin" && auth.role !== "service_role") {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: insufficient permissions to modify links" },
+        { status: 403 }
+      );
+    }
     const { id } = await context.params;
     const body = await request.json();
 
@@ -107,6 +113,12 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 export async function DELETE(request: NextRequest, context: RouteContext) {
   try {
     const auth = await authenticateRequest(request);
+    if (auth.role !== "admin" && auth.role !== "service_role") {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: insufficient permissions to delete links" },
+        { status: 403 }
+      );
+    }
     const { id } = await context.params;
 
     const supabase = getServiceSupabase();

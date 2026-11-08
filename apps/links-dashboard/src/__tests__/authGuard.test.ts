@@ -54,4 +54,30 @@ describe("authenticateRequest", () => {
     expect(auth.role).toBe("service_role");
     expect(auth.authType).toBe("api_key");
   });
+
+  it("never trusts client-supplied user_metadata for tenantId", async () => {
+    const supabaseModule = await import("../lib/supabase");
+    vi.spyOn(supabaseModule, "getServiceSupabase").mockReturnValue({
+      auth: {
+        getUser: vi.fn().mockResolvedValue({
+          data: {
+            user: {
+              id: "usr_legit_user",
+              app_metadata: {}, // no tenant_id here
+              user_metadata: { tenant_id: "ten_hacked_victim" },
+            },
+          },
+          error: null,
+        }),
+      },
+    } as any);
+
+    const req = new Request("https://links.sunshade.icu/api/v1/links", {
+      headers: { Authorization: "Bearer valid_jwt_token" },
+    });
+
+    const auth = await authenticateRequest(req);
+    expect(auth.tenantId).not.toBe("ten_hacked_victim");
+    expect(auth.tenantId).toBe("usr_legit_user");
+  });
 });

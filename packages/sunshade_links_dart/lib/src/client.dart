@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:http/http.dart' as http;
 
 class SunshadeLinksException implements Exception {
@@ -17,6 +18,8 @@ class SunshadeLinksClient {
   final String? apiKey;
   final http.Client _client;
   final bool _isClientOwned;
+  static int _slugCounter = 0;
+  static final Random _random = Random();
 
   SunshadeLinksClient({
     this.baseUrl = 'https://links.sunshade.icu',
@@ -41,24 +44,49 @@ class SunshadeLinksClient {
         if (apiKey != null) 'Authorization': 'Bearer $apiKey',
       };
 
+      // Fallback slug generation strategy if caller omits vanity slug (ANALYSIS_0007)
+      final effectiveSlug = (slug != null && slug.isNotEmpty)
+          ? slug
+          : 'lnk_${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}_${(_slugCounter++ & 0xffff).toRadixString(36)}_${_random.nextInt(0x10000).toRadixString(36)}';
+
       final body = jsonEncode({
         'destination': destination,
+        'destination_url': destination,
         'channel': channel,
-        if (slug != null && slug.isNotEmpty) 'slug': slug,
+        'channel_tag': channel,
+        'slug': effectiveSlug,
       });
 
       final response = await _client.post(uri, headers: headers, body: body);
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        final Map<String, dynamic> data = jsonDecode(response.body);
-        if (data.containsKey('shortUrl') && data['shortUrl'] is String) {
-          return data['shortUrl'] as String;
-        }
-        if (data.containsKey('slug') && data['slug'] is String) {
-          final returnedSlug = data['slug'] as String;
-          return channel.isNotEmpty && channel != 'direct'
-              ? '$baseUrl/$returnedSlug/$channel'
-              : '$baseUrl/$returnedSlug';
+        final dynamic decoded = jsonDecode(response.body);
+        if (decoded is Map<String, dynamic>) {
+          // Check root properties
+          if (decoded['shortUrl'] is String) {
+            return decoded['shortUrl'] as String;
+          }
+
+          // Check nested payload under 'data'
+          final dynamic dataObj = decoded['data'];
+          if (dataObj is Map<String, dynamic>) {
+            if (dataObj['shortUrl'] is String) {
+              return dataObj['shortUrl'] as String;
+            }
+            if (dataObj['slug'] is String) {
+              final returnedSlug = dataObj['slug'] as String;
+              return channel.isNotEmpty && channel != 'direct'
+                  ? '$baseUrl/$returnedSlug/$channel'
+                  : '$baseUrl/$returnedSlug';
+            }
+          }
+
+          if (decoded['slug'] is String) {
+            final returnedSlug = decoded['slug'] as String;
+            return channel.isNotEmpty && channel != 'direct'
+                ? '$baseUrl/$returnedSlug/$channel'
+                : '$baseUrl/$returnedSlug';
+          }
         }
       }
 

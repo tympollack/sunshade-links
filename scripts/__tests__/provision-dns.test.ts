@@ -52,4 +52,43 @@ describe("provision-links-dns", () => {
     expect(res.applied).toBeGreaterThanOrEqual(4);
     expect(mockFetch).toHaveBeenCalled();
   });
+
+  it("fails provisioning when SSL / TLS settings return non-2xx (ANALYSIS_0006)", async () => {
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("/settings/ssl")) {
+        return {
+          ok: false,
+          statusText: "Bad Request",
+          json: async () => ({ errors: [{ message: "Invalid SSL mode" }] }),
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({ success: true, result: {} }),
+      } as unknown as Response;
+    });
+
+    const res = await executeDnsProvisioning("cf_valid_token", "zone_test_456", mockFetch);
+    expect(res.success).toBe(false);
+    expect(res.errors.some((e) => e.includes("SSL mode setting failed"))).toBe(true);
+  });
+
+  it("does not post foreign domain page rules to primary zone (ANALYSIS_0003)", async () => {
+    const postedRules: any[] = [];
+    const mockFetch = vi.fn().mockImplementation(async (url: string, opts: any) => {
+      if (url.includes("/pagerules") && opts?.body) {
+        postedRules.push(JSON.parse(opts.body));
+      }
+      return {
+        ok: true,
+        json: async () => ({ success: true, result: {} }),
+      } as unknown as Response;
+    });
+
+    await executeDnsProvisioning("cf_valid_token", "zone_test_456", mockFetch);
+    for (const rule of postedRules) {
+      const targetVal = rule.targets[0]?.constraint?.value;
+      expect(targetVal).not.toContain("pymenergy.com");
+    }
+  });
 });

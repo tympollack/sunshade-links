@@ -56,6 +56,17 @@ export async function registerCustomHostname(
   }
 }
 
+export function isCustomDomainHost(hostname: string): boolean {
+  const cleanHost = hostname.toLowerCase().split(":")[0];
+  return (
+    cleanHost !== "links.sunshade.icu" &&
+    cleanHost !== "staging-links.sunshade.icu" &&
+    cleanHost !== "localhost" &&
+    cleanHost !== "127.0.0.1" &&
+    !cleanHost.endsWith(".workers.dev")
+  );
+}
+
 /**
  * Resolves incoming Host header to custom domain record from KV
  */
@@ -65,12 +76,7 @@ export async function resolveCustomDomain(
 ): Promise<CustomDomainConfig | null> {
   const cleanHost = hostname.toLowerCase().split(":")[0];
   // Ignore native root domain and apexes
-  if (
-    cleanHost === "links.sunshade.icu" ||
-    cleanHost === "staging-links.sunshade.icu" ||
-    cleanHost === "localhost" ||
-    cleanHost.endsWith(".workers.dev")
-  ) {
+  if (!isCustomDomainHost(cleanHost)) {
     return null;
   }
 

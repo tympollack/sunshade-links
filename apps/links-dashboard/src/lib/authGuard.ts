@@ -132,7 +132,6 @@ async function verifyJwtToken(token: string): Promise<AuthContext> {
 
     const tenantId =
       (data.user.app_metadata?.tenant_id as string) ||
-      (data.user.user_metadata?.tenant_id as string) ||
       data.user.id;
 
     const role = (data.user.app_metadata?.role as "admin" | "member") || "member";

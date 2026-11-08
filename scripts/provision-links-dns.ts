@@ -174,16 +174,78 @@ export async function executeDnsProvisioning(
       headers,
       body: JSON.stringify({ value: plan.sslSettings.always_use_https }),
     });
-    if (sslResp.ok) applied++;
+    if (sslResp.ok) {
+      applied++;
+    } else {
+      const body = (await sslResp.json().catch(() => ({}))) as { errors?: Array<{ message: string }> };
+      errors.push(`Always Use HTTPS setting failed: ${body.errors?.[0]?.message || sslResp.statusText}`);
+    }
 
     const tlsResp = await fetchFn(`https://api.cloudflare.com/client/v4/zones/${zoneId}/settings/min_tls_version`, {
       method: "PATCH",
       headers,
       body: JSON.stringify({ value: plan.sslSettings.min_tls_version }),
     });
-    if (tlsResp.ok) applied++;
+    if (tlsResp.ok) {
+      applied++;
+    } else {
+      const body = (await tlsResp.json().catch(() => ({}))) as { errors?: Array<{ message: string }> };
+      errors.push(`Min TLS version setting failed: ${body.errors?.[0]?.message || tlsResp.statusText}`);
+    }
+
+    const sslModeResp = await fetchFn(`https://api.cloudflare.com/client/v4/zones/${zoneId}/settings/ssl`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ value: plan.sslSettings.ssl }),
+    });
+    if (sslModeResp.ok) {
+      applied++;
+    } else {
+      const body = (await sslModeResp.json().catch(() => ({}))) as { errors?: Array<{ message: string }> };
+      errors.push(`SSL mode setting failed: ${body.errors?.[0]?.message || sslModeResp.statusText}`);
+    }
+
+    if (plan.sslSettings.security_header) {
+      const hstsResp = await fetchFn(`https://api.cloudflare.com/client/v4/zones/${zoneId}/settings/security_header`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ value: plan.sslSettings.security_header }),
+      });
+      if (hstsResp.ok) {
+        applied++;
+      } else {
+        const body = (await hstsResp.json().catch(() => ({}))) as { errors?: Array<{ message: string }> };
+        errors.push(`HSTS security header setting failed: ${body.errors?.[0]?.message || hstsResp.statusText}`);
+      }
+    }
   } catch (err: unknown) {
     errors.push(`SSL settings update error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 3. Configure Page Rules (ANALYSIS_0003: Only post rules matching the target zone domain)
+  for (const rule of plan.pageRules) {
+    const targetUrl = rule.targets[0]?.constraint?.value || "";
+    // Cloudflare rejects page rules for foreign domains on the current zone
+    // Foreign rules (e.g. pymenergy.com) must be provisioned against their own zone
+    if (targetUrl && !targetUrl.includes("sunshade.icu")) {
+      continue;
+    }
+
+    try {
+      const ruleResp = await fetchFn(`https://api.cloudflare.com/client/v4/zones/${zoneId}/pagerules`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(rule),
+      });
+      if (ruleResp.ok) {
+        applied++;
+      } else {
+        const body = (await ruleResp.json().catch(() => ({}))) as { errors?: Array<{ message: string }> };
+        errors.push(`Page rule failed: ${body.errors?.[0]?.message || ruleResp.statusText}`);
+      }
+    } catch (err: unknown) {
+      errors.push(`Page rule error: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   return {

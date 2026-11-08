@@ -139,6 +139,32 @@ export function saveChannelsForSlug(
   return { success: true };
 }
 
+export async function syncChannelToServer(
+  slug: string,
+  channel: ChannelData
+): Promise<{ success: boolean; data?: any; error?: string }> {
+  if (typeof window === "undefined") return { success: false, error: "SSR environment" };
+  try {
+    const res = await fetch("/api/v1/links", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slug,
+        channel_tag: channel.channel,
+        destination_url: channel.destination,
+      }),
+    });
+    if (!res.ok) {
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
+      return { success: false, error: json.error || `Server returned ${res.status}` };
+    }
+    const json = (await res.json()) as { success: boolean; data?: any };
+    return { success: true, data: json.data };
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : "Network error" };
+  }
+}
+
 export function addChannelForSlug(
   slug: string,
   newChannel: ChannelData
