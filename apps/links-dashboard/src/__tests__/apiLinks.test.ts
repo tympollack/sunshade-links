@@ -89,7 +89,7 @@ describe("Links API Endpoints", () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockResolvedValue({ data: { id: "existing-1" }, error: null }),
+        limit: vi.fn().mockResolvedValue({ data: [{ id: "existing-1", tenant_id: "ten_test" }], error: null }),
       };
 
       vi.spyOn(supabaseModule, "getServiceSupabase").mockReturnValue(mockQueryBuilder as any);
@@ -106,6 +106,38 @@ describe("Links API Endpoints", () => {
       expect(res.status).toBe(409);
       const json = await res.json();
       expect(json.error).toContain("already exists");
+    });
+
+    it("returns 409 when slug is already reserved by another tenant (BUG_0008)", async () => {
+      vi.spyOn(authGuard, "authenticateRequest").mockResolvedValue({
+        tenantId: "ten_test",
+        userId: "usr_test",
+        role: "admin",
+        authType: "api_key",
+      });
+
+      const mockQueryBuilder = {
+        schema: vi.fn().mockReturnThis(),
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockResolvedValue({ data: [{ id: "existing-1", tenant_id: "ten_other" }], error: null }),
+      };
+
+      vi.spyOn(supabaseModule, "getServiceSupabase").mockReturnValue(mockQueryBuilder as any);
+
+      const req = new NextRequest("https://links.sunshade.icu/api/v1/links", {
+        method: "POST",
+        body: JSON.stringify({
+          slug: "shared-slug",
+          destination_url: "https://example.com/target",
+        }),
+      });
+
+      const res = await createLink(req);
+      expect(res.status).toBe(409);
+      const json = await res.json();
+      expect(json.error).toContain("already reserved or in use");
     });
 
     it("rejects non-admin/non-service_role member credentials with 403", async () => {
@@ -138,23 +170,17 @@ describe("Links API Endpoints", () => {
         authType: "api_key",
       });
 
-      let checkExisting = true;
       const mockQueryBuilder = {
         schema: vi.fn().mockReturnThis(),
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockImplementation(() => {
-          if (checkExisting) {
-            checkExisting = false;
-            return Promise.resolve({ data: null, error: null });
-          }
-          return Promise.resolve({
-            data: { id: "new-lnk", slug: "new-slug", destination_url: "https://example.com" },
-            error: null,
-          });
-        }),
+        limit: vi.fn().mockResolvedValue({ data: [], error: null }),
         insert: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({
+          data: { id: "new-lnk", slug: "new-slug", destination_url: "https://example.com" },
+          error: null,
+        }),
       };
 
       vi.spyOn(supabaseModule, "getServiceSupabase").mockReturnValue(mockQueryBuilder as any);
@@ -190,6 +216,7 @@ describe("Links API Endpoints", () => {
         update: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: { slug: "lnk-1", channel_tag: "old-tag" }, error: null }),
         single: vi.fn().mockResolvedValue({
           data: { id: "lnk-1", title: "Updated Title" },
           error: null,
@@ -220,10 +247,15 @@ describe("Links API Endpoints", () => {
       const deleteChain = {
         eq: vi.fn().mockResolvedValue({ count: 1, error: null }),
       };
+      const selectChain = {
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: { slug: "lnk-1", channel_tag: "direct" } }),
+      };
       const mockQueryBuilder = {
         schema: vi.fn().mockReturnThis(),
         from: vi.fn().mockReturnThis(),
         delete: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnValue(selectChain),
         eq: vi.fn().mockReturnValue(deleteChain),
       };
 
