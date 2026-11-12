@@ -108,14 +108,16 @@ export async function POST(request: NextRequest) {
     const channelTag = payload.channel_tag || "direct";
     const supabase = getServiceSupabase();
 
-    // Check for unique (slug, channel_tag) tuple across shared platform (BUG_0008)
-    const { data: existing } = await supabase
+    // Check for unique (slug, channel_tag) tuple across shared platform (BUG_0008, ANALYSIS_0002)
+    const { data: existingRows } = await supabase
       .schema("links" as any)
       .from("short_links")
       .select("id, tenant_id")
       .eq("slug", payload.slug)
       .eq("channel_tag", channelTag)
-      .single();
+      .limit(1);
+
+    const existing = existingRows && existingRows.length > 0 ? existingRows[0] : null;
 
     if (existing) {
       if (existing.tenant_id === auth.tenantId) {

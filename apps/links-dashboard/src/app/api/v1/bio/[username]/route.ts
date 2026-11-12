@@ -63,11 +63,39 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const cleanUsername = username.toLowerCase().replace(/^@/, "");
 
     // 2. Validate tenant ownership (SEC_0002)
-    const isOwner = auth.tenantId === cleanUsername || auth.userId === cleanUsername;
-    const isAdmin = auth.role === "admin" || auth.role === "service_role";
-    if (!isOwner && !isAdmin) {
+    const isSystemAdmin = auth.role === "service_role" || auth.tenantId === "ten_master";
+    const supabase = getServiceSupabase();
+
+    let existingTenantId: string | null = null;
+    try {
+      const { data: existingProfile } = await supabase
+        .schema("links" as any)
+        .from("bio_profiles")
+        .select("tenant_id")
+        .eq("username", cleanUsername)
+        .maybeSingle();
+      if (existingProfile?.tenant_id) {
+        existingTenantId = existingProfile.tenant_id;
+      }
+    } catch {
+      // Non-blocking lookup
+    }
+
+    const isOwner =
+      auth.tenantId === cleanUsername ||
+      auth.userId === cleanUsername ||
+      (existingTenantId !== null && existingTenantId === auth.tenantId);
+
+    if (!isOwner && !isSystemAdmin) {
       return NextResponse.json(
         { success: false, error: "Forbidden: cross-tenant bio modification prohibited" },
+        { status: 403 }
+      );
+    }
+
+    if (existingTenantId && existingTenantId !== auth.tenantId && !isSystemAdmin) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: bio profile is owned by another tenant" },
         { status: 403 }
       );
     }
@@ -80,7 +108,6 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
     // 3. Durable persistence via Supabase (BUG_0003, BUG_0005 & ANALYSIS_0005)
     try {
-      const supabase = getServiceSupabase();
       const { error: dbError } = await supabase
         .schema("links" as any)
         .from("bio_profiles")

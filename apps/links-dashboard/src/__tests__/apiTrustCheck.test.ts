@@ -43,4 +43,26 @@ describe("GET /api/v1/trust/check", () => {
     expect(phishingJson.flags).toContain("PHISHING_SUSPICION");
     expect(phishingJson.trustScore).toBeLessThan(50);
   });
+
+  it("blocks SSRF attempts on internal/loopback/cloud metadata targets (SEC_0001)", async () => {
+    const forbiddenTargets = [
+      "http://localhost:3000/api",
+      "http://127.0.0.1:8080/internal",
+      "http://169.254.169.254/latest/meta-data/",
+      "http://10.0.0.1/admin",
+      "http://192.168.1.1/",
+      "http://172.16.0.1/private",
+      "http://subdomain.local/secret",
+      "http://service.internal/status",
+      "ftp://example.com/file",
+    ];
+
+    for (const target of forbiddenTargets) {
+      const req = new NextRequest(`https://links.sunshade.icu/api/v1/trust/check?url=${encodeURIComponent(target)}`);
+      const res = await checkTrust(req);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+    }
+  });
 });

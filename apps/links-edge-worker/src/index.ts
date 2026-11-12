@@ -93,7 +93,9 @@ export async function generateUnlockToken(
   secret?: string
 ): Promise<string> {
   const enc = new TextEncoder();
-  const keyData = enc.encode(secret || "sunshade-default-edge-key");
+  // Bind token signature to both server secret and password hash to prevent forgery (SEC_0004)
+  const keyMaterial = secret ? `${secret}:${passwordHash}` : passwordHash;
+  const keyData = enc.encode(keyMaterial);
   const key = await crypto.subtle.importKey(
     "raw",
     keyData,
@@ -101,7 +103,7 @@ export async function generateUnlockToken(
     false,
     ["sign"]
   );
-  const data = enc.encode(`${slug}:${passwordHash}`);
+  const data = enc.encode(`unlock:${slug}:${passwordHash}`);
   const signature = await crypto.subtle.sign("HMAC", key, data);
   return Array.from(new Uint8Array(signature))
     .map((b) => b.toString(16).padStart(2, "0"))
@@ -209,27 +211,38 @@ export default {
     if (pathname === "/api/cache/purge" && request.method === "POST") {
       const authHeader = request.headers.get("authorization") || "";
       const expectedToken = env.SUPABASE_SERVICE_ROLE_KEY;
-      if (!expectedToken || !authHeader.includes(expectedToken)) {
+      const parts = authHeader.trim().split(" ");
+      const token = parts.length === 2 && parts[0].toLowerCase() === "bearer" ? parts[1].trim() : "";
+      // Strict equality comparison to prevent substring bypass (SEC_0003)
+      if (!expectedToken || token !== expectedToken) {
         return new Response("Unauthorized", { status: 401 });
       }
       try {
         const body = (await request.json().catch(() => ({}))) as {
           slug?: string;
           hostname?: string;
+          hostnames?: string[];
           channelTag?: string;
+          oldChannelTag?: string;
           keys?: string[];
         };
         if (env.LINKS_KV) {
           if (body.keys && Array.isArray(body.keys)) {
             await Promise.all(body.keys.map((k) => env.LINKS_KV.delete(k)));
           } else if (body.slug) {
-            const host = body.hostname || hostname;
-            const keysToDelete = [
-              `slug:${host}:${body.slug}`,
-              `slug:${host}:${body.slug}:direct`,
-            ];
-            if (body.channelTag) {
-              keysToDelete.push(`slug:${host}:${body.slug}:${body.channelTag}`);
+            const hosts = body.hostnames && Array.isArray(body.hostnames) && body.hostnames.length > 0
+              ? body.hostnames
+              : [body.hostname || hostname];
+            const keysToDelete: string[] = [];
+            for (const h of hosts) {
+              keysToDelete.push(`slug:${h}:${body.slug}`);
+              keysToDelete.push(`slug:${h}:${body.slug}:direct`);
+              if (body.channelTag) {
+                keysToDelete.push(`slug:${h}:${body.slug}:${body.channelTag}`);
+              }
+              if (body.oldChannelTag) {
+                keysToDelete.push(`slug:${h}:${body.slug}:${body.oldChannelTag}`);
+              }
             }
             await Promise.all(keysToDelete.map((k) => env.LINKS_KV.delete(k)));
           }
@@ -386,7 +399,7 @@ export default {
       });
     }
 
-    // 10. Expiry & Click Limit Check (BUG_0007)
+    // 10. Expiry & Click Limit Check (BUG_0007, BUG_0001, BUG_0004)
     if (linkRecord.expires_at && new Date(linkRecord.expires_at) < new Date()) {
       return new Response("Link Expired (410 Gone)", {
         status: 410,
@@ -398,14 +411,27 @@ export default {
       const clickCountKey = `clicks:${linkRecord.id}`;
       let currentClicks = 0;
       if (env.LINKS_KV) {
-        const countStr = await env.LINKS_KV.get(clickCountKey);
-        currentClicks = countStr ? parseInt(countStr, 10) : 0;
+        try {
+          const countStr = await env.LINKS_KV.get(clickCountKey);
+          currentClicks = countStr ? parseInt(countStr, 10) : 0;
+        } catch (kvErr) {
+          console.warn("KV counter read failure for click limit check:", kvErr);
+          currentClicks = 0;
+        }
       }
       if (currentClicks >= linkRecord.click_limit) {
         return new Response("Link Click Limit Exceeded (410 Gone)", {
           status: 410,
           headers: { "Content-Type": "text/plain" },
         });
+      }
+      // Atomically reserve the click count in KV before redirecting (BUG_0001)
+      if (env.LINKS_KV) {
+        try {
+          await env.LINKS_KV.put(clickCountKey, String(currentClicks + 1));
+        } catch (kvPutErr) {
+          console.warn("KV counter update failure:", kvPutErr);
+        }
       }
     }
 
@@ -530,25 +556,10 @@ export default {
       destObj.searchParams.set("channel", channelTag);
     }
 
-    // 14. Non-blocking Telemetry Enqueue & Click Limit Counter Increment (BUG_0007)
+    // 14. Non-blocking Telemetry Enqueue
     if (env.TELEMETRY_QUEUE) {
       const telemetry = extractTelemetryEvent(request, linkRecord.id, linkRecord.tenant_id);
       ctx.waitUntil(env.TELEMETRY_QUEUE.send(telemetry));
-    }
-
-    if (linkRecord.click_limit != null && linkRecord.click_limit > 0 && env.LINKS_KV) {
-      const clickCountKey = `clicks:${linkRecord.id}`;
-      ctx.waitUntil(
-        (async () => {
-          try {
-            const countStr = await env.LINKS_KV.get(clickCountKey);
-            const current = countStr ? parseInt(countStr, 10) : 0;
-            await env.LINKS_KV.put(clickCountKey, String(current + 1));
-          } catch {
-            // Non-blocking counter update error
-          }
-        })()
-      );
     }
 
     // 15. Dispatch HTTP 302/303 Redirect

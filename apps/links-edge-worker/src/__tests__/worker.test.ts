@@ -410,7 +410,12 @@ describe("Worker Fetch Handler", () => {
         Authorization: "Bearer mock-key",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ slug: "purged-slug", channelTag: "direct" }),
+      body: JSON.stringify({
+        slug: "purged-slug",
+        channelTag: "new-tag",
+        oldChannelTag: "old-tag",
+        hostnames: ["links.sunshade.icu", "custom.domain.com"],
+      }),
     });
 
     const res = await worker.fetch(purgeReq, mockEnv, mockCtx);
@@ -419,6 +424,47 @@ describe("Worker Fetch Handler", () => {
     expect(json.success).toBe(true);
     expect(mockEnv.LINKS_KV.delete).toHaveBeenCalledWith("slug:links.sunshade.icu:purged-slug");
     expect(mockEnv.LINKS_KV.delete).toHaveBeenCalledWith("slug:links.sunshade.icu:purged-slug:direct");
+    expect(mockEnv.LINKS_KV.delete).toHaveBeenCalledWith("slug:links.sunshade.icu:purged-slug:new-tag");
+    expect(mockEnv.LINKS_KV.delete).toHaveBeenCalledWith("slug:links.sunshade.icu:purged-slug:old-tag");
+    expect(mockEnv.LINKS_KV.delete).toHaveBeenCalledWith("slug:custom.domain.com:purged-slug");
+    expect(mockEnv.LINKS_KV.delete).toHaveBeenCalledWith("slug:custom.domain.com:purged-slug:old-tag");
+  });
+
+  it("rejects unauthorized or substring token on /api/cache/purge (SEC_0003)", async () => {
+    const unauthorizedReq = new Request("https://links.sunshade.icu/api/cache/purge", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer mock",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ slug: "purged-slug" }),
+    });
+
+    const res = await worker.fetch(unauthorizedReq, mockEnv, mockCtx);
+    expect(res.status).toBe(401);
+  });
+
+  it("synchronously reserves click count before redirecting (BUG_0001)", async () => {
+    const clickLimitRecord: CachedLinkRecord = {
+      id: "lnk_click_atomic",
+      tenant_id: "ten_1",
+      slug: "atomic-click",
+      destination_url: "https://example.com/target",
+      is_active: true,
+      click_limit: 10,
+    };
+    (mockEnv.LINKS_KV.get as any).mockImplementation((key: string) => {
+      if (key.startsWith("slug:")) return Promise.resolve(clickLimitRecord);
+      if (key === "clicks:lnk_click_atomic") return Promise.resolve("4");
+      return Promise.resolve(null);
+    });
+
+    const req = new Request("https://links.sunshade.icu/atomic-click");
+    const res = await worker.fetch(req, mockEnv, mockCtx);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://example.com/target");
+    // Verify synchronous KV put for reserved click
+    expect(mockEnv.LINKS_KV.put).toHaveBeenCalledWith("clicks:lnk_click_atomic", "5");
   });
 
   it("falls back to public bio route /@slug when shortlink is not found (BUG_0002)", async () => {

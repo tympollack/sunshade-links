@@ -89,7 +89,7 @@ describe("Links API Endpoints", () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockResolvedValue({ data: { id: "existing-1", tenant_id: "ten_test" }, error: null }),
+        limit: vi.fn().mockResolvedValue({ data: [{ id: "existing-1", tenant_id: "ten_test" }], error: null }),
       };
 
       vi.spyOn(supabaseModule, "getServiceSupabase").mockReturnValue(mockQueryBuilder as any);
@@ -121,7 +121,7 @@ describe("Links API Endpoints", () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockResolvedValue({ data: { id: "existing-1", tenant_id: "ten_other" }, error: null }),
+        limit: vi.fn().mockResolvedValue({ data: [{ id: "existing-1", tenant_id: "ten_other" }], error: null }),
       };
 
       vi.spyOn(supabaseModule, "getServiceSupabase").mockReturnValue(mockQueryBuilder as any);
@@ -170,23 +170,17 @@ describe("Links API Endpoints", () => {
         authType: "api_key",
       });
 
-      let checkExisting = true;
       const mockQueryBuilder = {
         schema: vi.fn().mockReturnThis(),
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockImplementation(() => {
-          if (checkExisting) {
-            checkExisting = false;
-            return Promise.resolve({ data: null, error: null });
-          }
-          return Promise.resolve({
-            data: { id: "new-lnk", slug: "new-slug", destination_url: "https://example.com" },
-            error: null,
-          });
-        }),
+        limit: vi.fn().mockResolvedValue({ data: [], error: null }),
         insert: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({
+          data: { id: "new-lnk", slug: "new-slug", destination_url: "https://example.com" },
+          error: null,
+        }),
       };
 
       vi.spyOn(supabaseModule, "getServiceSupabase").mockReturnValue(mockQueryBuilder as any);
@@ -222,6 +216,7 @@ describe("Links API Endpoints", () => {
         update: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: { slug: "lnk-1", channel_tag: "old-tag" }, error: null }),
         single: vi.fn().mockResolvedValue({
           data: { id: "lnk-1", title: "Updated Title" },
           error: null,

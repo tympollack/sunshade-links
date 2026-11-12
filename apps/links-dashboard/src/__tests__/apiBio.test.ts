@@ -55,6 +55,49 @@ describe("Bio API Route /api/v1/bio/[username] (SEC_0001, BUG_0003)", () => {
     expect(json.error).toContain("Forbidden");
   });
 
+  it("rejects non-owner tenant admins from modifying another tenant's bio (SEC_0002)", async () => {
+    vi.spyOn(authGuard, "authenticateRequest").mockResolvedValue({
+      tenantId: "tenant_evil",
+      userId: "user_evil",
+      authType: "jwt",
+      role: "admin",
+    });
+
+    mockSupabase.maybeSingle.mockResolvedValueOnce({
+      data: { username: "tymz", tenant_id: "tymz" },
+      error: null,
+    });
+
+    const req = new NextRequest("http://localhost:3000/api/v1/bio/tymz", {
+      method: "POST",
+      body: JSON.stringify({ displayName: "Hostile Takeover" }),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ username: "tymz" }) });
+    expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(json.error).toContain("Forbidden");
+  });
+
+  it("allows service_role to modify any bio profile (SEC_0002)", async () => {
+    vi.spyOn(authGuard, "authenticateRequest").mockResolvedValue({
+      tenantId: "ten_master",
+      userId: "service_user",
+      authType: "jwt",
+      role: "service_role",
+    });
+
+    const req = new NextRequest("http://localhost:3000/api/v1/bio/tymz", {
+      method: "POST",
+      body: JSON.stringify({ displayName: "Admin Override" }),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ username: "tymz" }) });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.success).toBe(true);
+  });
+
   it("returns 500 when database persistence fails or throws (BUG_0003)", async () => {
     vi.spyOn(authGuard, "authenticateRequest").mockResolvedValue({
       tenantId: "tymz",
