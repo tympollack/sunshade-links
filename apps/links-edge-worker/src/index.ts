@@ -87,6 +87,38 @@ export async function verifyPassword(candidate: string, storedHash: string): Pro
   return rawHash === storedHash;
 }
 
+export async function generateUnlockToken(
+  slug: string,
+  passwordHash: string,
+  secret?: string
+): Promise<string> {
+  const enc = new TextEncoder();
+  const keyData = enc.encode(secret || "sunshade-default-edge-key");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const data = enc.encode(`${slug}:${passwordHash}`);
+  const signature = await crypto.subtle.sign("HMAC", key, data);
+  return Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export async function verifyUnlockToken(
+  token: string,
+  slug: string,
+  passwordHash: string,
+  secret?: string
+): Promise<boolean> {
+  if (!token) return false;
+  const expected = await generateUnlockToken(slug, passwordHash, secret);
+  return token === expected;
+}
+
 export function isReservedDashboardRoute(pathname: string): boolean {
   return (
     pathname.startsWith("/_next") ||
@@ -169,9 +201,46 @@ export default {
     const pathname = url.pathname;
     const hostname = url.hostname.toLowerCase();
 
-    // 1. Health Probe
+    // 1. Health Probe & Cache Purge Endpoint (BUG_0006)
     if (pathname === "/_health" || pathname === "/api/health") {
       return handleWorkerHealthCheck(env, WORKER_START_TIME);
+    }
+
+    if (pathname === "/api/cache/purge" && request.method === "POST") {
+      const authHeader = request.headers.get("authorization") || "";
+      const expectedToken = env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!expectedToken || !authHeader.includes(expectedToken)) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      try {
+        const body = (await request.json().catch(() => ({}))) as {
+          slug?: string;
+          hostname?: string;
+          channelTag?: string;
+          keys?: string[];
+        };
+        if (env.LINKS_KV) {
+          if (body.keys && Array.isArray(body.keys)) {
+            await Promise.all(body.keys.map((k) => env.LINKS_KV.delete(k)));
+          } else if (body.slug) {
+            const host = body.hostname || hostname;
+            const keysToDelete = [
+              `slug:${host}:${body.slug}`,
+              `slug:${host}:${body.slug}:direct`,
+            ];
+            if (body.channelTag) {
+              keysToDelete.push(`slug:${host}:${body.slug}:${body.channelTag}`);
+            }
+            await Promise.all(keysToDelete.map((k) => env.LINKS_KV.delete(k)));
+          }
+        }
+        return new Response(JSON.stringify({ success: true, purged: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch {
+        return new Response(JSON.stringify({ success: false, error: "Purge failed" }), { status: 500 });
+      }
     }
 
     // 2. Asset & Static Bypasses
@@ -305,15 +374,19 @@ export default {
       linkRecord = null;
     }
 
-    // 9. 404 Not Found
+    // 9. 404 Not Found & Public Bio Fallback (BUG_0002)
     if (!linkRecord || !linkRecord.is_active) {
+      if (!linkRecord && segments.length === 1 && !slug.startsWith("@")) {
+        // Route non-shortlink vanity path to canonical bio route /@slug
+        return Response.redirect(`${url.origin}/@${slug}`, 302);
+      }
       return new Response("Link not found or deactivated", {
         status: 404,
         headers: { "Content-Type": "text/plain" },
       });
     }
 
-    // 10. Expiry & Click Limit Check
+    // 10. Expiry & Click Limit Check (BUG_0007)
     if (linkRecord.expires_at && new Date(linkRecord.expires_at) < new Date()) {
       return new Response("Link Expired (410 Gone)", {
         status: 410,
@@ -321,11 +394,30 @@ export default {
       });
     }
 
-    // 11. Password Challenge Gate (SEC_0003 & SEC_0004)
+    if (linkRecord.click_limit != null && linkRecord.click_limit > 0) {
+      const clickCountKey = `clicks:${linkRecord.id}`;
+      let currentClicks = 0;
+      if (env.LINKS_KV) {
+        const countStr = await env.LINKS_KV.get(clickCountKey);
+        currentClicks = countStr ? parseInt(countStr, 10) : 0;
+      }
+      if (currentClicks >= linkRecord.click_limit) {
+        return new Response("Link Click Limit Exceeded (410 Gone)", {
+          status: 410,
+          headers: { "Content-Type": "text/plain" },
+        });
+      }
+    }
+
+    // 11. Password Challenge Gate (SEC_0001, SEC_0003 & SEC_0004)
     let unlockedViaPost = false;
     if (linkRecord.password_hash) {
       const cookieHeader = request.headers.get("cookie") || "";
-      const isUnlockedCookie = cookieHeader.includes(`sunshade_unlocked_${slug}=1`);
+      const cookieMatch = cookieHeader.match(new RegExp(`(?:^|; )sunshade_unlocked_${slug}=([^;]+)`));
+      const cookieToken = cookieMatch ? decodeURIComponent(cookieMatch[1]) : null;
+      const isUnlockedCookie = cookieToken
+        ? await verifyUnlockToken(cookieToken, slug, linkRecord.password_hash, env.SUPABASE_SERVICE_ROLE_KEY)
+        : false;
 
       let candidate: string | null = null;
       if (request.method === "POST") {
@@ -350,6 +442,22 @@ export default {
 
       let authorized = isUnlockedCookie;
       if (!authorized && candidate) {
+        // Enforce Password Challenge Rate Limiter Tier 1 (5 attempts/min per IP) (SEC_0003)
+        const pwRateCheck = await checkRateLimit({
+          clientIp,
+          limiter: env.RATE_LIMITER,
+          isPasswordChallenge: true,
+        });
+        if (!pwRateCheck.allowed) {
+          return new Response("Too Many Password Attempts. Locked out for 15 minutes.", {
+            status: 429,
+            headers: {
+              "Retry-After": String(pwRateCheck.retryAfterSeconds || 900),
+              "Content-Type": "text/plain",
+            },
+          });
+        }
+
         authorized = await verifyPassword(candidate, linkRecord.password_hash);
         if (authorized && request.method === "POST") {
           unlockedViaPost = true;
@@ -384,7 +492,15 @@ export default {
 
       const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
       if (unlockedViaPost) {
-        headers.set("Set-Cookie", `sunshade_unlocked_${slug}=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=300`);
+        const unlockToken = await generateUnlockToken(
+          slug,
+          linkRecord.password_hash!,
+          env.SUPABASE_SERVICE_ROLE_KEY
+        );
+        headers.set(
+          "Set-Cookie",
+          `sunshade_unlocked_${slug}=${unlockToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=300`
+        );
       }
 
       return new Response(renderedHtml, {
@@ -414,17 +530,40 @@ export default {
       destObj.searchParams.set("channel", channelTag);
     }
 
-    // 14. Non-blocking Telemetry Enqueue
+    // 14. Non-blocking Telemetry Enqueue & Click Limit Counter Increment (BUG_0007)
     if (env.TELEMETRY_QUEUE) {
       const telemetry = extractTelemetryEvent(request, linkRecord.id, linkRecord.tenant_id);
       ctx.waitUntil(env.TELEMETRY_QUEUE.send(telemetry));
+    }
+
+    if (linkRecord.click_limit != null && linkRecord.click_limit > 0 && env.LINKS_KV) {
+      const clickCountKey = `clicks:${linkRecord.id}`;
+      ctx.waitUntil(
+        (async () => {
+          try {
+            const countStr = await env.LINKS_KV.get(clickCountKey);
+            const current = countStr ? parseInt(countStr, 10) : 0;
+            await env.LINKS_KV.put(clickCountKey, String(current + 1));
+          } catch {
+            // Non-blocking counter update error
+          }
+        })()
+      );
     }
 
     // 15. Dispatch HTTP 302/303 Redirect
     const redirectHeaders = new Headers();
     redirectHeaders.set("Location", destObj.toString());
     if (unlockedViaPost) {
-      redirectHeaders.set("Set-Cookie", `sunshade_unlocked_${slug}=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=300`);
+      const unlockToken = await generateUnlockToken(
+        slug,
+        linkRecord.password_hash!,
+        env.SUPABASE_SERVICE_ROLE_KEY
+      );
+      redirectHeaders.set(
+        "Set-Cookie",
+        `sunshade_unlocked_${slug}=${unlockToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=300`
+      );
     }
 
     return new Response(null, {

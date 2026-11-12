@@ -34,4 +34,13 @@ describe("GET /api/v1/trust/check", () => {
     expect(trackedJson.trustScore).toBeLessThan(cleanJson.trustScore);
     expect(trackedJson.flags).toContain("SURVEILLANCE_TRACKER_TOKENS_DETECTED");
   });
+
+  it("detects and flags phishing indicators on suspicious hosts (SEC_0004)", async () => {
+    const phishingReq = new NextRequest("https://links.sunshade.icu/api/v1/trust/check?url=https%3A%2F%2Flogin.paypal.verify-account.badhost.com%2Flogin");
+    const phishingRes = await checkTrust(phishingReq);
+    const phishingJson = await phishingRes.json();
+
+    expect(phishingJson.flags).toContain("PHISHING_SUSPICION");
+    expect(phishingJson.trustScore).toBeLessThan(50);
+  });
 });

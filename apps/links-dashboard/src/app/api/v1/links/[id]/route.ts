@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { authenticateRequest, AuthError } from "../../../../../lib/authGuard";
 import { getServiceSupabase } from "../../../../../lib/supabase";
+import { invalidateLinkKvCache } from "@/lib/cacheInvalidation";
 
 const UpdateLinkSchema = z.object({
   destination_url: z
@@ -101,6 +102,12 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       );
     }
 
+    // Invalidate edge KV cache after link update (BUG_0006)
+    await invalidateLinkKvCache({
+      slug: updated.slug,
+      channelTag: updated.channel_tag,
+    });
+
     return NextResponse.json({ success: true, data: updated });
   } catch (err: unknown) {
     if (err instanceof AuthError) {
@@ -122,6 +129,22 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
     const { id } = await context.params;
 
     const supabase = getServiceSupabase();
+
+    // Fetch existing slug and channel tag before deletion for cache invalidation (BUG_0006)
+    let linkToDelete: { slug: string; channel_tag?: string } | null = null;
+    try {
+      const { data } = await supabase
+        .schema("links" as any)
+        .from("short_links")
+        .select("slug, channel_tag")
+        .eq("id", id)
+        .eq("tenant_id", auth.tenantId)
+        .maybeSingle();
+      linkToDelete = data;
+    } catch {
+      // Non-blocking lookup failure
+    }
+
     const { error, count } = await supabase
       .schema("links" as any)
       .from("short_links")
@@ -135,6 +158,14 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
 
     if (count === 0) {
       return NextResponse.json({ success: false, error: "Link not found" }, { status: 404 });
+    }
+
+    // Invalidate edge KV cache after link deletion (BUG_0006)
+    if (linkToDelete?.slug) {
+      await invalidateLinkKvCache({
+        slug: linkToDelete.slug,
+        channelTag: linkToDelete.channel_tag,
+      });
     }
 
     return NextResponse.json({ success: true, message: "Link deleted successfully" });

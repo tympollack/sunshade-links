@@ -4,9 +4,6 @@ compatibility_date = "2026-11-01"
 compatibility_flags = ["nodejs_compat"]
 
 # Default / Local development bindings
-[vars]
-DASHBOARD_ORIGIN = "https://sunshade-links-dashboard.pages.dev"
-
 kv_namespaces = [
   { binding = "LINKS_KV", id = "links_kv_local_id", preview_id = "links_kv_local_preview_id" }
 ]
@@ -25,11 +22,12 @@ binding = "RATE_LIMITER"
 namespace_id = "1001"
 simple = { limit = 100, period = 10 }
 
+[vars]
+DASHBOARD_ORIGIN = "https://sunshade-links-dashboard.pages.dev"
+
 # Staging Environment
 [env.staging]
 name = "sunshade-links-edge-staging"
-[env.staging.vars]
-DASHBOARD_ORIGIN = "https://staging.sunshade-links-dashboard.pages.dev"
 
 routes = [
   { pattern = "staging-links.sunshade.icu/*", zone_name = "sunshade.icu" }
@@ -53,11 +51,12 @@ binding = "RATE_LIMITER"
 namespace_id = "1002"
 simple = { limit = 100, period = 10 }
 
+[env.staging.vars]
+DASHBOARD_ORIGIN = "https://staging.sunshade-links-dashboard.pages.dev"
+
 # Production Environment
 [env.production]
 name = "sunshade-links-edge-production"
-[env.production.vars]
-DASHBOARD_ORIGIN = "https://sunshade-links-dashboard.pages.dev"
 
 routes = [
   { pattern = "links.sunshade.icu/*", zone_name = "sunshade.icu", custom_domain = true }
@@ -80,3 +79,7 @@ max_batch_timeout = 10
 binding = "RATE_LIMITER"
 namespace_id = "1003"
 simple = { limit = 100, period = 10 }
+
+[env.production.vars]
+DASHBOARD_ORIGIN = "https://sunshade-links-dashboard.pages.dev"
+
