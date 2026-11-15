@@ -1,9 +1,47 @@
 import React from "react";
 import { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { getBioProfile, BioTheme } from "@/lib/bioStore";
+import { getBioProfile, saveBioProfile, BioTheme, BioProfile } from "@/lib/bioStore";
+import { getServiceSupabase } from "@/lib/supabase";
 import { RssFeedBlock } from "@/components/bio/blocks/RssFeedBlock";
 import { ShieldCheck, Globe, Mail, ExternalLink } from "lucide-react";
+
+async function fetchAuthoritativeBioProfile(username: string): Promise<BioProfile> {
+  const cleanUsername = decodeURIComponent(username).toLowerCase().replace(/^@/, "");
+
+  try {
+    const supabase = getServiceSupabase();
+    const { data, error } = await supabase
+      .schema("links" as any)
+      .from("bio_profiles")
+      .select("*")
+      .eq("username", cleanUsername)
+      .maybeSingle();
+
+    if (!error && data) {
+      const defaultProf = getBioProfile(cleanUsername);
+      const profile: BioProfile = {
+        ...defaultProf,
+        username: data.username,
+        displayName: data.display_name || defaultProf.displayName,
+        bio: data.bio ?? defaultProf.bio,
+        avatarUrl: data.avatar_url ?? defaultProf.avatarUrl,
+        theme: (data.theme_config?.theme as any) || defaultProf.theme,
+        links: data.theme_config?.links || defaultProf.links || [],
+        tagline: data.theme_config?.tagline ?? defaultProf.tagline,
+        socials: data.theme_config?.socials || defaultProf.socials || {},
+        rssFeedUrl: data.theme_config?.rssFeedUrl ?? defaultProf.rssFeedUrl,
+        trustScore: defaultProf.trustScore ?? 85,
+      };
+      saveBioProfile(profile);
+      return profile;
+    }
+  } catch {
+    // Supabase client or DB read fallback
+  }
+
+  return getBioProfile(cleanUsername);
+}
 
 function GithubIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -27,7 +65,7 @@ interface PageProps {
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { username } = await params;
-  const profile = getBioProfile(username);
+  const profile = await fetchAuthoritativeBioProfile(username);
 
   return {
     title: `${profile.displayName} (@${profile.username}) — SunShade Bio`,
@@ -89,7 +127,7 @@ export default async function BioProfilePage({ params }: PageProps) {
   const { username } = await params;
   if (!username) notFound();
 
-  const profile = getBioProfile(username);
+  const profile = await fetchAuthoritativeBioProfile(username);
   const theme = THEME_STYLES[profile.theme] || THEME_STYLES.slate;
 
   return (

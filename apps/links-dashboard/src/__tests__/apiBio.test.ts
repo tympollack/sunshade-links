@@ -36,10 +36,10 @@ describe("Bio API Route /api/v1/bio/[username] (SEC_0001, BUG_0003)", () => {
     expect(json.success).toBe(false);
   });
 
-  it("rejects cross-tenant bio modifications with 403 (SEC_0001)", async () => {
+  it("rejects cross-tenant bio modifications with 403 (SEC_0001, SEC_0002)", async () => {
     vi.spyOn(authGuard, "authenticateRequest").mockResolvedValue({
-      tenantId: "tenant_other",
-      userId: "user_123",
+      tenantId: "default_tenant",
+      userId: "user_default",
       authType: "api_key",
       role: "member",
     });
@@ -55,7 +55,71 @@ describe("Bio API Route /api/v1/bio/[username] (SEC_0001, BUG_0003)", () => {
     expect(json.error).toContain("Forbidden");
   });
 
-  it("persists bio profile to Supabase on authenticated POST (BUG_0003)", async () => {
+  it("rejects non-owner tenant admins from modifying another tenant's bio (SEC_0002)", async () => {
+    vi.spyOn(authGuard, "authenticateRequest").mockResolvedValue({
+      tenantId: "tenant_evil",
+      userId: "user_evil",
+      authType: "jwt",
+      role: "admin",
+    });
+
+    mockSupabase.maybeSingle.mockResolvedValueOnce({
+      data: { username: "tymz", tenant_id: "tymz" },
+      error: null,
+    });
+
+    const req = new NextRequest("http://localhost:3000/api/v1/bio/tymz", {
+      method: "POST",
+      body: JSON.stringify({ displayName: "Hostile Takeover" }),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ username: "tymz" }) });
+    expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(json.error).toContain("Forbidden");
+  });
+
+  it("allows service_role to modify any bio profile (SEC_0002)", async () => {
+    vi.spyOn(authGuard, "authenticateRequest").mockResolvedValue({
+      tenantId: "ten_master",
+      userId: "service_user",
+      authType: "jwt",
+      role: "service_role",
+    });
+
+    const req = new NextRequest("http://localhost:3000/api/v1/bio/tymz", {
+      method: "POST",
+      body: JSON.stringify({ displayName: "Admin Override" }),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ username: "tymz" }) });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.success).toBe(true);
+  });
+
+  it("returns 500 when database persistence fails or throws (BUG_0003)", async () => {
+    vi.spyOn(authGuard, "authenticateRequest").mockResolvedValue({
+      tenantId: "tymz",
+      userId: "user_tymz",
+      authType: "jwt",
+      role: "member",
+    });
+
+    mockSupabase.upsert.mockRejectedValueOnce(new Error("Supabase timeout"));
+
+    const req = new NextRequest("http://localhost:3000/api/v1/bio/tymz", {
+      method: "POST",
+      body: JSON.stringify({ displayName: "Tymz Timeout" }),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ username: "tymz" }) });
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json.success).toBe(false);
+  });
+
+  it("persists bio profile to Supabase on authenticated POST (BUG_0003, BUG_0005)", async () => {
     vi.spyOn(authGuard, "authenticateRequest").mockResolvedValue({
       tenantId: "tymz",
       userId: "user_tymz",
@@ -68,7 +132,9 @@ describe("Bio API Route /api/v1/bio/[username] (SEC_0001, BUG_0003)", () => {
       body: JSON.stringify({
         displayName: "Tymz Pollack Updated",
         bio: "Updated bio description",
+        tagline: "Updated Tagline",
         theme: "cyberpunk",
+        rssFeedUrl: "https://example.com/rss",
         links: [],
       }),
     });
@@ -79,6 +145,10 @@ describe("Bio API Route /api/v1/bio/[username] (SEC_0001, BUG_0003)", () => {
       expect.objectContaining({
         username: "tymz",
         display_name: "Tymz Pollack Updated",
+        theme_config: expect.objectContaining({
+          tagline: "Updated Tagline",
+          rssFeedUrl: "https://example.com/rss",
+        }),
       }),
       { onConflict: "username" }
     );

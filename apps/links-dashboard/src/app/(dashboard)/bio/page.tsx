@@ -100,7 +100,7 @@ export default function BioBuilderPage() {
 
           <div className="flex items-center gap-2">
             <a
-              href={`/${profile.username}`}
+              href={`/@${profile.username}`}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900 text-xs font-medium text-slate-300 hover:bg-slate-800 transition"

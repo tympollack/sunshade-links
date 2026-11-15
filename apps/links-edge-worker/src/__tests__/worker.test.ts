@@ -217,7 +217,7 @@ describe("Worker Fetch Handler", () => {
     const html = await res2.text();
     expect(html).toContain("Incorrect password");
 
-    // 3. Correct password via POST -> 303 redirect with cookie (SEC_0003)
+    // 3. Correct password via POST -> 303 redirect with signed cookie (SEC_0003)
     const formDataRight = new FormData();
     formDataRight.set("pass", "123");
     const req3 = new Request("https://links.sunshade.icu/secret", {
@@ -227,11 +227,22 @@ describe("Worker Fetch Handler", () => {
     const res3 = await worker.fetch(req3, mockEnv, mockCtx);
     expect(res3.status).toBe(303);
     expect(res3.headers.get("location")).toBe("https://target.com/vault");
-    expect(res3.headers.get("set-cookie")).toContain("sunshade_unlocked_secret=1");
+    const setCookie = res3.headers.get("set-cookie") || "";
+    expect(setCookie).toContain("sunshade_unlocked_secret=");
+    const match = setCookie.match(/sunshade_unlocked_secret=([^;]+)/);
+    const validCookieToken = match ? match[1] : "";
+    expect(validCookieToken).not.toBe("1");
 
-    // 4. Subsequent GET with cookie -> 302 without password prompt
-    const req4 = new Request("https://links.sunshade.icu/secret", {
+    // 4. Forged cookie with =1 is rejected with 401 (SEC_0001)
+    const reqForged = new Request("https://links.sunshade.icu/secret", {
       headers: { cookie: "sunshade_unlocked_secret=1" },
+    });
+    const resForged = await worker.fetch(reqForged, mockEnv, mockCtx);
+    expect(resForged.status).toBe(401);
+
+    // 5. Subsequent GET with valid signed cookie -> 302 without password prompt
+    const req4 = new Request("https://links.sunshade.icu/secret", {
+      headers: { cookie: `sunshade_unlocked_secret=${validCookieToken}` },
     });
     const res4 = await worker.fetch(req4, mockEnv, mockCtx);
     expect(res4.status).toBe(302);
@@ -330,6 +341,144 @@ describe("Worker Fetch Handler", () => {
       expect(fetchSpy).toHaveBeenCalledWith(
         expect.objectContaining({ url: "https://sunshade-links-dashboard.pages.dev/api/v1/links" })
       );
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("enforces click_limit and returns 410 Gone when cap reached (BUG_0007)", async () => {
+    const limitedRecord: CachedLinkRecord = {
+      id: "lnk_click_limited",
+      tenant_id: "ten_1",
+      slug: "capped",
+      destination_url: "https://example.com/one-time",
+      is_active: true,
+      click_limit: 2,
+    };
+    (mockEnv.LINKS_KV.get as any).mockImplementation((key: string) => {
+      if (key.startsWith("slug:")) return Promise.resolve(limitedRecord);
+      if (key === "clicks:lnk_click_limited") return Promise.resolve("2");
+      return Promise.resolve(null);
+    });
+
+    const req = new Request("https://links.sunshade.icu/capped");
+    const res = await worker.fetch(req, mockEnv, mockCtx);
+    expect(res.status).toBe(410);
+    expect(await res.text()).toContain("Link Click Limit Exceeded");
+  });
+
+  it("enforces rate limits on repeated failed password attempts (SEC_0003)", async () => {
+    const protectedRecord: CachedLinkRecord = {
+      id: "lnk_protected_limit",
+      tenant_id: "ten_1",
+      slug: "bruteforce",
+      destination_url: "https://example.com/vault",
+      is_active: true,
+      password_hash: "wronghash",
+    };
+    (mockEnv.LINKS_KV.get as any).mockResolvedValue(protectedRecord);
+
+    // Make 5 failed attempts
+    for (let i = 0; i < 5; i++) {
+      const formData = new FormData();
+      formData.set("pass", `bad_${i}`);
+      const req = new Request("https://links.sunshade.icu/bruteforce", {
+        method: "POST",
+        body: formData,
+        headers: { "cf-connecting-ip": "198.51.100.99" },
+      });
+      await worker.fetch(req, mockEnv, mockCtx);
+    }
+
+    // 6th attempt should be rate limited with 429
+    const formData = new FormData();
+    formData.set("pass", "bad_6");
+    const req6 = new Request("https://links.sunshade.icu/bruteforce", {
+      method: "POST",
+      body: formData,
+      headers: { "cf-connecting-ip": "198.51.100.99" },
+    });
+    const res6 = await worker.fetch(req6, mockEnv, mockCtx);
+    expect(res6.status).toBe(429);
+    expect(await res6.text()).toContain("Too Many Password Attempts");
+  });
+
+  it("purges KV cache via authenticated /api/cache/purge endpoint (BUG_0006)", async () => {
+    const purgeReq = new Request("https://links.sunshade.icu/api/cache/purge", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer mock-key",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        slug: "purged-slug",
+        channelTag: "new-tag",
+        oldChannelTag: "old-tag",
+        hostnames: ["links.sunshade.icu", "custom.domain.com"],
+      }),
+    });
+
+    const res = await worker.fetch(purgeReq, mockEnv, mockCtx);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { success: boolean; purged: boolean };
+    expect(json.success).toBe(true);
+    expect(mockEnv.LINKS_KV.delete).toHaveBeenCalledWith("slug:links.sunshade.icu:purged-slug");
+    expect(mockEnv.LINKS_KV.delete).toHaveBeenCalledWith("slug:links.sunshade.icu:purged-slug:direct");
+    expect(mockEnv.LINKS_KV.delete).toHaveBeenCalledWith("slug:links.sunshade.icu:purged-slug:new-tag");
+    expect(mockEnv.LINKS_KV.delete).toHaveBeenCalledWith("slug:links.sunshade.icu:purged-slug:old-tag");
+    expect(mockEnv.LINKS_KV.delete).toHaveBeenCalledWith("slug:custom.domain.com:purged-slug");
+    expect(mockEnv.LINKS_KV.delete).toHaveBeenCalledWith("slug:custom.domain.com:purged-slug:old-tag");
+  });
+
+  it("rejects unauthorized or substring token on /api/cache/purge (SEC_0003)", async () => {
+    const unauthorizedReq = new Request("https://links.sunshade.icu/api/cache/purge", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer mock",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ slug: "purged-slug" }),
+    });
+
+    const res = await worker.fetch(unauthorizedReq, mockEnv, mockCtx);
+    expect(res.status).toBe(401);
+  });
+
+  it("synchronously reserves click count before redirecting (BUG_0001)", async () => {
+    const clickLimitRecord: CachedLinkRecord = {
+      id: "lnk_click_atomic",
+      tenant_id: "ten_1",
+      slug: "atomic-click",
+      destination_url: "https://example.com/target",
+      is_active: true,
+      click_limit: 10,
+    };
+    (mockEnv.LINKS_KV.get as any).mockImplementation((key: string) => {
+      if (key.startsWith("slug:")) return Promise.resolve(clickLimitRecord);
+      if (key === "clicks:lnk_click_atomic") return Promise.resolve("4");
+      return Promise.resolve(null);
+    });
+
+    const req = new Request("https://links.sunshade.icu/atomic-click");
+    const res = await worker.fetch(req, mockEnv, mockCtx);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://example.com/target");
+    // Verify synchronous KV put for reserved click
+    expect(mockEnv.LINKS_KV.put).toHaveBeenCalledWith("clicks:lnk_click_atomic", "5");
+  });
+
+  it("falls back to public bio route /@slug when shortlink is not found (BUG_0002)", async () => {
+    (mockEnv.LINKS_KV.get as any).mockResolvedValue(null);
+
+    // Mock fetch for Supabase DB miss
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue(new Response("[]", { status: 200 }));
+
+    try {
+      const req = new Request("https://links.sunshade.icu/tymz");
+      const res = await worker.fetch(req, mockEnv, mockCtx);
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("https://links.sunshade.icu/@tymz");
     } finally {
       global.fetch = originalFetch;
     }
