@@ -11,6 +11,10 @@ on:
       - staging
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify-and-deploy:
     name: Verify & Deploy Links Platform
@@ -41,6 +45,21 @@ jobs:
       - name: Build All Workspaces
         run: npm run build
 
+      - name: Validate Supabase Staging Credentials
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/staging'
+        run: |
+          HAS_STAGING_URL="${{ secrets.STAGING_SUPABASE_URL != '' && '1' || '0' }}"
+          HAS_STAGING_KEY="${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY != '' && '1' || '0' }}"
+          if [ "$HAS_STAGING_URL" -ne "$HAS_STAGING_KEY" ]; then
+            echo "::error::Mismatched staging credentials! STAGING_SUPABASE_URL and STAGING_SUPABASE_SERVICE_ROLE_KEY must both be configured together or both omitted to avoid mixing project credentials."
+            exit 1
+          fi
+          if [ "$HAS_STAGING_URL" -eq "1" ]; then
+            echo "Staging Supabase credentials configured as a matched pair."
+          else
+            echo "No separate staging Supabase credentials found; using shared credentials."
+          fi
+
       - name: Deploy Edge Worker (Staging)
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/staging'
         uses: cloudflare/wrangler-action@v3
@@ -55,8 +74,8 @@ jobs:
             SUPABASE_SERVICE_ROLE_KEY
             MASTER_API_KEY
         env:
-          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL || secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL != '' && secrets.STAGING_SUPABASE_URL || secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY != '' && secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
           MASTER_API_KEY: ${{ secrets.MASTER_API_KEY }}
 
       - name: Deploy Edge Worker (Production)
@@ -77,11 +96,19 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           MASTER_API_KEY: ${{ secrets.MASTER_API_KEY }}
 
-      - name: Build Dashboard for Cloudflare Pages
-        if: github.event_name != 'pull_request'
+      - name: Build Dashboard for Cloudflare Pages (Staging)
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/staging'
         run: |
           cd apps/links-dashboard
           npx --yes --legacy-peer-deps @cloudflare/next-on-pages --outdir .vercel/output/static || (npx next build && mkdir -p .vercel/output/static && cp -r .next/* .vercel/output/static/)
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL != '' && secrets.STAGING_SUPABASE_URL || secrets.SUPABASE_URL }}
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL != '' && secrets.STAGING_SUPABASE_URL || secrets.SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY || secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY || secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY != '' && secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          LINKS_EDGE_URL: https://links-stag.sunshade.icu
+          NEXT_PUBLIC_LINKS_EDGE_URL: https://links-stag.sunshade.icu
 
       - name: Deploy Dashboard to Cloudflare Pages (Staging)
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/staging'
@@ -91,6 +118,20 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: apps/links-dashboard
           command: pages deploy .vercel/output/static --project-name=sunshade-links --branch=staging
+
+      - name: Build Dashboard for Cloudflare Pages (Production)
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          cd apps/links-dashboard
+          npx --yes --legacy-peer-deps @cloudflare/next-on-pages --outdir .vercel/output/static || (npx next build && mkdir -p .vercel/output/static && cp -r .next/* .vercel/output/static/)
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          LINKS_EDGE_URL: https://links.sunshade.icu
+          NEXT_PUBLIC_LINKS_EDGE_URL: https://links.sunshade.icu
 
       - name: Deploy Dashboard to Cloudflare Pages (Production)
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
