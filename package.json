@@ -11,6 +11,7 @@
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
+    "cf:provision": "node scripts/provision-cloudflare.mjs",
     "test": "vitest run"
   },
   "engines": {

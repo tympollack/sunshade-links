@@ -281,7 +281,7 @@ export default {
     if (isReservedDashboardRoute(pathname)) {
       const dashboardOrigin =
         env.DASHBOARD_ORIGIN ||
-        (hostname.startsWith("staging")
+        (hostname.startsWith("staging") || hostname.includes("-stag")
           ? "https://staging.sunshade-links-dashboard.pages.dev"
           : "https://sunshade-links-dashboard.pages.dev");
       const originUrl = new URL(request.url);
