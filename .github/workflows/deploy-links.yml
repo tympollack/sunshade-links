@@ -5,6 +5,10 @@ on:
     branches:
       - main
       - staging
+  pull_request:
+    branches:
+      - main
+      - staging
   workflow_dispatch:
 
 jobs:
@@ -22,7 +26,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
       - name: Install dependencies
@@ -38,30 +42,47 @@ jobs:
         run: npm run build
 
       - name: Deploy Edge Worker (Staging)
-        if: github.ref == 'refs/heads/staging'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/staging'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: apps/links-edge-worker
           command: deploy --env staging
+          secrets: |
+            SUPABASE_URL
+            SUPABASE_SERVICE_ROLE_KEY
+            MASTER_API_KEY
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MASTER_API_KEY: ${{ secrets.MASTER_API_KEY }}
 
       - name: Deploy Edge Worker (Production)
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: apps/links-edge-worker
           command: deploy --env production
+          secrets: |
+            SUPABASE_URL
+            SUPABASE_SERVICE_ROLE_KEY
+            MASTER_API_KEY
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MASTER_API_KEY: ${{ secrets.MASTER_API_KEY }}
 
       - name: Build Dashboard for Cloudflare Pages
+        if: github.event_name != 'pull_request'
         run: |
           cd apps/links-dashboard
           npx --yes --legacy-peer-deps @cloudflare/next-on-pages --outdir .vercel/output/static || (npx next build && mkdir -p .vercel/output/static && cp -r .next/* .vercel/output/static/)
 
       - name: Deploy Dashboard to Cloudflare Pages (Staging)
-        if: github.ref == 'refs/heads/staging'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/staging'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -70,7 +91,7 @@ jobs:
           command: pages deploy .vercel/output/static --project-name=sunshade-links --branch=staging
 
       - name: Deploy Dashboard to Cloudflare Pages (Production)
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -79,6 +100,7 @@ jobs:
           command: pages deploy .vercel/output/static --project-name=sunshade-links --branch=main
 
       - name: Post-Deploy Smoke Test (/api/health)
+        if: github.event_name != 'pull_request'
         run: |
           TARGET_HOST="${{ github.ref == 'refs/heads/main' && 'https://links.sunshade.icu' || 'https://links-stag.sunshade.icu' }}"
           echo "Verifying health endpoint at $TARGET_HOST/api/health..."

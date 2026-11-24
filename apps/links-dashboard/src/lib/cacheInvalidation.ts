@@ -19,6 +19,7 @@ export async function invalidateLinkKvCache(options: CacheInvalidationOptions): 
   // Gather all applicable hosts: platform domains + tenant custom domains (BUG_0003)
   const hosts: string[] = [hostname || "links.sunshade.icu"];
   if (!hostname) {
+    hosts.push("links-stag.sunshade.icu");
     hosts.push("staging-links.sunshade.icu");
   }
 

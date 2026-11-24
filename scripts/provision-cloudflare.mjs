@@ -3,11 +3,11 @@
 /**
  * Idempotent provisioning script for SunShade Links Cloudflare infrastructure:
  * - Validates API Token and Account permissions upfront
- * - KV Namespaces (LINKS_KV)
- * - Cloudflare Queues (links-telemetry-queue)
- * - Cloudflare Pages project (sunshade-links) & custom domains
- * - Worker service & custom domain attachments (links.sunshade.icu & links-stag.sunshade.icu)
- * - Proxied DNS CNAME records in the sunshade.icu zone
+ * - KV Namespaces (LINKS_KV, LINKS_KV_STAGING)
+ * - Cloudflare Queues (links-telemetry-queue, links-telemetry-queue-staging, links-telemetry-queue-prod)
+ * - Cloudflare Pages project (sunshade-links) for internal dashboard origin
+ * - Worker custom domain attachments (links.sunshade.icu & links-stag.sunshade.icu)
+ * - Removes any conflicting Pages custom domains or stale CNAMEs so Worker custom domains bind cleanly
  *
  * Required environment variables:
  *   CLOUDFLARE_API_TOKEN   - Cloudflare API token with Pages, Workers, KV, Queues & DNS permissions
@@ -58,10 +58,7 @@ function parseErrorMessage(payload, defaultMsg) {
 async function verifyAuth() {
   console.log('[cf:provision] Verifying Cloudflare API token credentials...');
 
-  // 1. Try Account Token verification (for Account-Owned API Tokens: Manage account > Account API tokens)
   let verify = await cfRequest(`/accounts/${accountId}/tokens/verify`);
-
-  // 2. Fallback to User Token verification (for User API Tokens: My Profile > API Tokens)
   if (!verify.ok) {
     const userVerify = await cfRequest('/user/tokens/verify');
     if (userVerify.ok) {
@@ -69,7 +66,6 @@ async function verifyAuth() {
     }
   }
 
-  // 3. Fallback to direct resource check in case token lacks Tokens:Read self-inspection permission
   if (!verify.ok) {
     const kvCheck = await cfRequest(`/accounts/${accountId}/storage/kv/namespaces?per_page=1`);
     if (kvCheck.ok) {
@@ -213,28 +209,30 @@ async function ensurePagesProject(projectName) {
   return created.payload.result;
 }
 
-async function ensurePagesDomain(projectName, domainName) {
+async function detachPagesDomainIfPresent(projectName, domainName) {
   const list = await cfRequest(`/accounts/${accountId}/pages/projects/${projectName}/domains`);
   const existing = list.ok && Array.isArray(list.payload.result)
     ? list.payload.result.find((d) => d.name === domainName)
     : null;
 
   if (existing) {
-    console.log(`[cf:provision] Custom domain "${domainName}" is already bound to Pages "${projectName}" (status: ${existing.status}).`);
-    return;
+    console.log(`[cf:provision] Detaching "${domainName}" from Pages project "${projectName}" so Worker can claim domain...`);
+    await cfRequest(`/accounts/${accountId}/pages/projects/${projectName}/domains/${domainName}`, {
+      method: 'DELETE',
+    });
   }
+}
 
-  const added = await cfRequest(`/accounts/${accountId}/pages/projects/${projectName}/domains`, {
-    method: 'POST',
-    body: JSON.stringify({ name: domainName }),
-  });
-
-  if (!added.ok) {
-    console.log(`[cf:provision] Pages domain "${domainName}" status: ${added.payload.errors?.[0]?.message || added.status}`);
-    return;
+async function removeCnameIfPresent(zoneId, hostname) {
+  const list = await cfRequest(
+    `/zones/${zoneId}/dns_records?type=CNAME&name=${encodeURIComponent(hostname)}`
+  );
+  if (list.ok && Array.isArray(list.payload.result)) {
+    for (const record of list.payload.result) {
+      console.log(`[cf:provision] Removing CNAME ${hostname} -> ${record.content} to allow Worker Custom Domain management...`);
+      await cfRequest(`/zones/${zoneId}/dns_records/${record.id}`, { method: 'DELETE' });
+    }
   }
-
-  console.log(`[cf:provision] Bound custom domain "${domainName}" to Pages "${projectName}".`);
 }
 
 async function ensureWorkerDomain(hostname, serviceName, environment, zoneId) {
@@ -262,58 +260,8 @@ async function ensureWorkerDomain(hostname, serviceName, environment, zoneId) {
   if (res.ok) {
     console.log(`[cf:provision] Attached Worker custom domain "${hostname}" to service "${serviceName}".`);
   } else {
-    console.log(`[cf:provision] Worker custom domain attachment for "${hostname}" note: ${res.payload.errors?.[0]?.message || 'will bind upon initial worker deploy'}.`);
+    console.log(`[cf:provision] Worker custom domain attachment note for "${hostname}": ${res.payload.errors?.[0]?.message || 'will bind upon initial worker deploy via wrangler.toml'}.`);
   }
-}
-
-async function upsertCnameRecord(zoneId, hostname, target) {
-  const list = await cfRequest(
-    `/zones/${zoneId}/dns_records?type=CNAME&name=${encodeURIComponent(hostname)}`
-  );
-  if (!list.ok) {
-    const detail = parseErrorMessage(list.payload, `HTTP ${list.status}`);
-    throw new Error(
-      `Failed to query DNS records for "${hostname}": ${detail}.\n` +
-      `  -> Ensure token has "Zone > DNS > Edit" permission.`
-    );
-  }
-
-  const existing = Array.isArray(list.payload.result) ? list.payload.result[0] : null;
-
-  const body = {
-    type: 'CNAME',
-    name: hostname,
-    content: target,
-    proxied: true,
-    ttl: 1,
-  };
-
-  if (existing) {
-    if (existing.content === target && existing.proxied === true) {
-      console.log(`[cf:provision] DNS CNAME ${hostname} -> ${target} already configured.`);
-      return;
-    }
-    const updated = await cfRequest(`/zones/${zoneId}/dns_records/${existing.id}`, {
-      method: 'PUT',
-      body: JSON.stringify(body),
-    });
-    if (!updated.ok) {
-      const detail = parseErrorMessage(updated.payload, `HTTP ${updated.status}`);
-      throw new Error(`Failed to update DNS record ${hostname}: ${detail}`);
-    }
-    console.log(`[cf:provision] Updated DNS CNAME ${hostname} -> ${target}.`);
-    return;
-  }
-
-  const created = await cfRequest(`/zones/${zoneId}/dns_records`, {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
-  if (!created.ok) {
-    const detail = parseErrorMessage(created.payload, `HTTP ${created.status}`);
-    throw new Error(`Failed to create DNS record ${hostname}: ${detail}`);
-  }
-  console.log(`[cf:provision] Created DNS CNAME ${hostname} -> ${target}.`);
 }
 
 async function main() {
@@ -333,21 +281,23 @@ async function main() {
   const qProd = await ensureQueue('links-telemetry-queue-prod');
   console.log(`[cf:provision] Queues confirmed: links-telemetry-queue=${qMain.queue_id || qMain.id}`);
 
-  // 4. Provision Cloudflare Pages Project & Custom Domains
+  // 4. Provision Cloudflare Pages Project (used as internal origin for dashboard proxying)
   await ensurePagesProject(PAGES_PROJECT_NAME);
-  await ensurePagesDomain(PAGES_PROJECT_NAME, PRODUCTION_DOMAIN);
-  await ensurePagesDomain(PAGES_PROJECT_NAME, STAGING_DOMAIN);
 
   // 5. Resolve Cloudflare Zone
   const zoneId = await resolveZoneId();
   console.log(`[cf:provision] Resolved zone "${ROOT_ZONE}" (ID: ${zoneId}).`);
 
-  // 6. Worker Custom Domains & Proxied DNS CNAMEs
+  // 6. Free up domain hostnames for Cloudflare Worker Custom Domains
+  // (Worker custom domains manage their own DNS; Pages CNAMEs must be detached so they don't hijack traffic)
+  await detachPagesDomainIfPresent(PAGES_PROJECT_NAME, PRODUCTION_DOMAIN);
+  await detachPagesDomainIfPresent(PAGES_PROJECT_NAME, STAGING_DOMAIN);
+  await removeCnameIfPresent(zoneId, PRODUCTION_DOMAIN);
+  await removeCnameIfPresent(zoneId, STAGING_DOMAIN);
+
+  // 7. Worker Custom Domains (links.sunshade.icu & links-stag.sunshade.icu belong to the Edge Worker)
   await ensureWorkerDomain(PRODUCTION_DOMAIN, WORKER_SERVICE_PROD, 'production', zoneId);
   await ensureWorkerDomain(STAGING_DOMAIN, WORKER_SERVICE_STAG, 'staging', zoneId);
-
-  await upsertCnameRecord(zoneId, PRODUCTION_DOMAIN, `${PAGES_PROJECT_NAME}.pages.dev`);
-  await upsertCnameRecord(zoneId, STAGING_DOMAIN, `staging.${PAGES_PROJECT_NAME}.pages.dev`);
 
   console.log('[cf:provision] SunShade Links Cloudflare infrastructure successfully provisioned.');
 }
