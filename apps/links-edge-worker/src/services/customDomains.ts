@@ -60,6 +60,7 @@ export function isCustomDomainHost(hostname: string): boolean {
   const cleanHost = hostname.toLowerCase().split(":")[0];
   return (
     cleanHost !== "links.sunshade.icu" &&
+    cleanHost !== "links-stag.sunshade.icu" &&
     cleanHost !== "staging-links.sunshade.icu" &&
     cleanHost !== "localhost" &&
     cleanHost !== "127.0.0.1" &&

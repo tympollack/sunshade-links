@@ -8,6 +8,7 @@ describe("resolveCustomDomain", () => {
     } as any;
 
     expect(await resolveCustomDomain("links.sunshade.icu", mockKv)).toBeNull();
+    expect(await resolveCustomDomain("links-stag.sunshade.icu", mockKv)).toBeNull();
     expect(await resolveCustomDomain("staging-links.sunshade.icu", mockKv)).toBeNull();
     expect(await resolveCustomDomain("localhost:8787", mockKv)).toBeNull();
     expect(await resolveCustomDomain("test.workers.dev", mockKv)).toBeNull();

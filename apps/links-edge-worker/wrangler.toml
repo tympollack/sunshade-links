@@ -1,4 +1,4 @@
-name = "sunshade-links-edge"
+name = "sunshade-links"
 main = "src/index.ts"
 compatibility_date = "2026-11-01"
 compatibility_flags = ["nodejs_compat"]
@@ -23,18 +23,19 @@ namespace_id = "1001"
 simple = { limit = 100, period = 10 }
 
 [vars]
-DASHBOARD_ORIGIN = "https://sunshade-links-dashboard.pages.dev"
+DASHBOARD_ORIGIN = "https://sunshade-links.pages.dev"
 
 # Staging Environment
 [env.staging]
-name = "sunshade-links-edge-staging"
+name = "sunshade-links-stag"
 
 routes = [
+  { pattern = "links-stag.sunshade.icu", custom_domain = true },
   { pattern = "staging-links.sunshade.icu/*", zone_name = "sunshade.icu" }
 ]
 
 kv_namespaces = [
-  { binding = "LINKS_KV", id = "links_kv_staging_id", preview_id = "links_kv_staging_preview" }
+  { binding = "LINKS_KV", id = "aa0ba706f54a40ae9258fa39bbc3966a", preview_id = "links_kv_staging_preview" }
 ]
 
 [[env.staging.queues.producers]]
@@ -52,18 +53,18 @@ namespace_id = "1002"
 simple = { limit = 100, period = 10 }
 
 [env.staging.vars]
-DASHBOARD_ORIGIN = "https://staging.sunshade-links-dashboard.pages.dev"
+DASHBOARD_ORIGIN = "https://staging.sunshade-links.pages.dev"
 
 # Production Environment
 [env.production]
-name = "sunshade-links-edge-production"
+name = "sunshade-links"
 
 routes = [
-  { pattern = "links.sunshade.icu/*", zone_name = "sunshade.icu", custom_domain = true }
+  { pattern = "links.sunshade.icu", custom_domain = true }
 ]
 
 kv_namespaces = [
-  { binding = "LINKS_KV", id = "links_kv_prod_id" }
+  { binding = "LINKS_KV", id = "876a02874b3f43e58dcb8593d8bb0c19" }
 ]
 
 [[env.production.queues.producers]]
@@ -81,5 +82,4 @@ namespace_id = "1003"
 simple = { limit = 100, period = 10 }
 
 [env.production.vars]
-DASHBOARD_ORIGIN = "https://sunshade-links-dashboard.pages.dev"
-
+DASHBOARD_ORIGIN = "https://sunshade-links.pages.dev"
